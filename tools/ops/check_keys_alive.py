@@ -101,7 +101,8 @@ def main() -> int:
     ap.add_argument("--sample", type=int, default=3,
                     help="抽样几把做真实推理（0=跳过）")
     ap.add_argument("--model", default=None, help="推理用的模型（默认 config 第一个）")
-    ap.add_argument("--out", default=str(DEFAULT_OUT))
+    ap.add_argument("--out", default=str(DEFAULT_OUT),
+                    help="输出**目录**（工具会在其中写 keys_alive.json，不是文件路径）")
     args = ap.parse_args()
 
     with Path(args.csv).open(encoding="utf-8-sig") as f:
