@@ -52,6 +52,39 @@ def load_existing(path) -> list[dict]:
     return [r for r in d if isinstance(r, dict)] if isinstance(d, list) else []
 
 
+# `api_key` 的前缀。抽成常量：覆盖统计与 `check_keys_alive.py` 的行级过滤
+# 必须认同一套前缀，否则两边口径不一致会互相掩盖（一边当 key、另一边当噪音）。
+KEY_PREFIX = "sk-"
+
+
+def key_coverage(records, known_keys) -> tuple:
+    """台账里的 API Key 相对一份**外部清单**（如导出快照 CSV）的覆盖情况。
+
+    返回 `(台账 key 数, 清单 key 数, 台账有而清单没有的 key 集合)`。
+
+    🔴 为什么要有这个函数
+    ---------------------
+    `tools/ops/check_keys_alive.py` 的默认输入是**某次导出的 CSV 快照**，
+    而它只报"存活 N/N" —— N 是**快照自己的**分母，不告诉你快照覆盖了多少台账。
+
+    实测踩到（2026-09-20）：快照停在 3 天前、只有 53 把，台账里已有 407 把，
+    于是跑出"53/53 全绿"这种**看着没问题、实则完全没覆盖本批**的结论。
+
+    这与 `check_keys_alive.py` 里已有的"行级防静默缩水"（过滤掉非 `sk-` 行时
+    必须把丢掉的条数报出来）是**同一类缺陷，只是高了一层**：文件级也会静默缩水，
+    而且更难发现 —— 行级缩水至少分母变了，文件级缩水连**分母本身**都是错的。
+
+    ⚠ 返回的 `missing` 只覆盖**台账有、清单没有**这一个方向。反方向
+      （清单有而台账没有）是另一回事（可能台账被覆盖过），本函数**不判** ——
+      别把"missing 为空"读成"数据没问题"。
+    """
+    ledger_keys = {r.get("api_key") for r in records
+                   if isinstance(r, dict)
+                   and str(r.get("api_key") or "").startswith(KEY_PREFIX)}
+    known = {k for k in known_keys if k}
+    return len(ledger_keys), len(known), ledger_keys - known
+
+
 def merge_records(existing: list[dict], new: list[dict]):
     """按 `email` 合并，返回 `(merged, 原有条数, 新增, 覆盖数)`。
 

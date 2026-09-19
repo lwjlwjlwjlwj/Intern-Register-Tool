@@ -16,10 +16,16 @@ key 建出来时都验过（`stages["verify"] == "ok(10 models)"`），但那是
 ⚠ 与注册无关：打的是 `discovery-api.intern-ai.org.cn`，不是注册接口，
   所以**不会**影响注册封禁的状态，可以放心跑。
 
+🔴 默认输入是**某次导出的 CSV 快照**，不是台账 —— 快照会过期。
+  工具因此带一道"文件级防静默缩水"护栏：拿台账比对，快照覆盖不全就告警。
+  没有这道护栏时，快照停在几天前会让你看到"53/53 全绿"这种**没测到却像全绿**的结论
+  （2026-09-20 实测踩到）。
+
 用法：
     python tools/ops/check_keys_alive.py                       # 全部 + 抽样 3 个真推理
     python tools/ops/check_keys_alive.py --sample 5 --workers 8
     python tools/ops/check_keys_alive.py --limit 10            # 只测前 10 把
+    python tools/ops/check_keys_alive.py --csv <自己导出的清单> # 核验指定批次
 """
 
 import argparse
@@ -32,7 +38,14 @@ from pathlib import Path
 
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
+from src import ledger  # noqa: E402  （必须在 _path 之后：它才把仓库根加进 sys.path）
+
+# key 前缀只在这里定义一次，行级过滤与台账覆盖统计共用 —— 两边口径不一致
+# 会互相掩盖（一边当 key、另一边当噪音）。
+KEY_PREFIX = ledger.KEY_PREFIX
+
 DEFAULT_CSV = ROOT / ".workbuddy-ai" / "exports" / "keys_export.csv"
+DEFAULT_LEDGER = ROOT / "results.json"
 DEFAULT_OUT = ROOT / ".workbuddy-ai" / "exports"
 
 
@@ -81,6 +94,8 @@ def probe_chat(key: str, model: str = None) -> tuple:
 def main() -> int:
     ap = argparse.ArgumentParser(description="检查 API Key 存活性")
     ap.add_argument("--csv", default=str(DEFAULT_CSV), help="key 来源 CSV")
+    ap.add_argument("--ledger", default=str(DEFAULT_LEDGER),
+                    help="权威台账（只用来检查快照是否过期，不参与测试）")
     ap.add_argument("--limit", type=int, default=0, help="只测前 N 把（0=全部）")
     ap.add_argument("--workers", type=int, default=8, help="并发数")
     ap.add_argument("--sample", type=int, default=3,
@@ -94,11 +109,27 @@ def main() -> int:
     # 前缀过滤：只认 `sk-`。**必须把丢掉的行数报出来** —— 否则一旦平台换了
     # key 前缀（或 CSV 列名变了），这里会静默少测，报告仍然"全绿"。
     # 本项目对"静默缩水"已经吃过一次亏（导出文件成了唯一副本那回）。
-    rows = [r for r in all_rows if (r.get("api_key") or "").startswith("sk-")]
+    rows = [r for r in all_rows if (r.get("api_key") or "").startswith(KEY_PREFIX)]
     skipped = len(all_rows) - len(rows)
     if skipped:
-        print(f"⚠ 跳过 {skipped}/{len(all_rows)} 行：api_key 缺失或不以 'sk-' 开头"
+        print(f"⚠ 跳过 {skipped}/{len(all_rows)} 行：api_key 缺失或不以 '{KEY_PREFIX}' 开头"
               f"（若这是意外，说明 CSV 列名或 key 前缀变了，别当成'没有死 key'）")
+
+    # ── 文件级防静默缩水：整个 CSV 可能已经过期 ────────────────────
+    # 上面那段管的是**行级**缩水（分母变了）；这段管**文件级**缩水 ——
+    # 快照整体停在几天前时，连分母都是错的，只报"存活 N/N"看不出问题。
+    # 实测（2026-09-20）：快照 53 把 / 台账 407 把，跑出"53/53 全绿"，
+    # 看着没问题，其实完全没覆盖当时那一批。
+    ledger_n, csv_n, missing = ledger.key_coverage(
+        ledger.load_existing(args.ledger), {r["api_key"] for r in rows})
+    if missing:
+        print(f"⚠ 导出快照**落后于台账**：台账 {ledger_n} 把带 key / 快照 {csv_n} 把，"
+              f"本次结论**不覆盖**台账里多出的 {len(missing)} 把。")
+        print(f"    快照：{args.csv}")
+        print(f"    台账：{args.ledger}")
+        print("    ⇒ 这不是'没有死 key'，是**没测到**。"
+              "要核验全量请先按当前台账重新导出，或改用别的取样口径。")
+
     if args.limit:
         rows = rows[:args.limit]
     if not rows:
