@@ -162,6 +162,44 @@ class QuotaStatus:
         return f"配额 {left}（窗口 {self.window_h:g}h）"
 
 
+def shortfall_hint(total_left: int, planned: int, ignore_quota: bool) -> str:
+    """槽位模式下「本地额度不够」的提示行。返回 `""` = 无需提示。
+
+    🔴 为什么必须看 `ignore_quota`（2026-09-20 实测踩到）：
+    本地计数是按出口 IP 的**保守估计**，而 `--ignore-quota` 的语义就是
+    "别信它"。开关打开时**一个账号都不会被跳过**，此时再说
+    "这一批会全部被跳过（未发请求）"就是**假话** —— 而假话会把人引向
+    错误的排查方向（去查"为什么全跳过了"，实际它一个没跳）。
+
+    实测现场：`--ignore-quota` 那一批 **47/50 成功、0 跳过**，日志却写着
+    "所有出口额度都已用尽，这一批会全部被跳过（未发请求）"。
+
+    ⚠ 同一段逻辑里**两个分支**都有这个毛病（`total_left == 0` 与
+    `total_left < planned`）—— 非槽位分支早就用 `not ignore_quota` 挡过，
+    这里是漏的那一半。改的时候别只修一个。
+
+    ⚠ 判据刻意放在 `src/` 而不是 `run.py` 的 `main()` 里，两个理由：
+      1. 内联分支没法单独测，而这条判据靠 `tests/test_run_quota_hint.py` 钉住；
+      2. **测试链不该 import CLI 模块** —— `run.py` 会把整套 pipeline 拉进
+         `sys.path`，触发 `test_dependency_surface.py` 的未声明依赖断言
+         （实测踩到：`✗ run ← tests/test_run_quota_hint.py`）。
+    """
+    if ignore_quota:
+        if total_left >= planned:
+            return ""
+        # 开关打开 ⇒ 本地数字只是参考，不构成"会跳过"的承诺。
+        return (f"   ℹ 本地额度只剩 {total_left} 个（< 计划 {planned}）"
+                f"，但 --ignore-quota 已开启 ⇒ **不会因此跳过任何账号**，\n"
+                f"     直接按计划跑，是否触顶由服务端决定。")
+    if total_left == 0:
+        return ("   ⚠ 所有出口额度都已用尽，这一批会全部被跳过（未发请求）。\n"
+                "     等窗口滑出，或加 --ignore-quota（有被目标站封 IP 的风险）。")
+    if total_left < planned:
+        return (f"   ⚠ 可用额度 {total_left} < 计划 {planned}，"
+                f"会有约 {planned - total_left} 个被跳过（未发请求）。")
+    return ""
+
+
 def status(scope: str = None) -> QuotaStatus:
     """统计**当前滚动窗口内**的成功注册数。
 

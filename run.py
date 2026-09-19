@@ -111,14 +111,15 @@ def main():
         print(f"   ── 合计可用额度 {total_left} 个"
               f"（全局计数 {qs.describe()} —— 那是**老出口**的，别拿它判断）",
               flush=True)
-        if total_left == 0:
-            print("   ⚠ 所有出口额度都已用尽，这一批会全部被跳过（未发请求）。\n"
-                  "     等窗口滑出，或加 --ignore-quota（有被目标站封 IP 的风险）。",
-                  flush=True)
-        elif total_left < args.count:
-            print(f"   ⚠ 可用额度 {total_left} < 计划 {args.count}，"
-                  f"会有约 {args.count - total_left} 个被跳过（未发请求）。",
-                  flush=True)
+        # 🔴 提示行由 `quota.shortfall_hint()` 统一生成 —— 那里要读
+        #    `--ignore-quota`，否则开关打开时会打出"这一批会全部被跳过"
+        #    这种**假话**（2026-09-20 实测：47/50 成功，提示却说全跳）。
+        #    ⚠ 判据放在 `src/quota.py` 而不是这里的内联分支，理由见那个函数：
+        #      内联没法单独测，而且**测试链不该 import CLI 模块**
+        #      （`run.py` 会把整套 pipeline 拉进来，撞 test_dependency_surface）。
+        hint = quota.shortfall_hint(total_left, args.count, args.ignore_quota)
+        if hint:
+            print(hint, flush=True)
     else:
         print(f"本地配额：{qs.describe()}  "
               f"[state: {quota.state_path()}]", flush=True)
