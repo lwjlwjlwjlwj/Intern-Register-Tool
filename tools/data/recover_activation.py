@@ -21,16 +21,20 @@
 
 用法：
     # 从台账里自动挑"注册成功、激活失败"的账号
-    python tools/data/recover_activation.py --from results.json
+    #   `--from` 必须传**台账读源**（最新那份全量快照）。取路径：
+    #     python -c "from src import ledger; print(ledger.ledger_path())"
+    #   ⚠ 别传 `ledger/latest.json` —— 它只含最近一批那几十条，历史账号不在
+    #     里面，候选会少一个数量级，而且**不报错**。
+    python tools/data/recover_activation.py --from <台账读源>
 
     # 指定邮箱
     python tools/data/recover_activation.py --emails a@x.com,b@x.com
 
     # 只列出候选、不真发激活请求
-    python tools/data/recover_activation.py --from results.json --dry-run
+    python tools/data/recover_activation.py --from <台账读源> --dry-run
 
     # 救回来的结果写回台账（默认只打印）
-    python tools/data/recover_activation.py --from results.json --write
+    python tools/data/recover_activation.py --from <台账读源> --write
 
 退出码：0 = 全部救回（或 dry-run）；1 = 有账号仍没救回来。
 """
@@ -118,7 +122,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="只列候选，不发激活请求")
     ap.add_argument("--write", action="store_true",
                     help="把救回的账号写回台账（默认只打印）")
-    ap.add_argument("--out", default="results.json", help="台账路径（配合 --write）")
+    ap.add_argument("--out", default=str(ledger.ledger_path()),
+                    help="台账路径（配合 --write）")
     ap.add_argument("--report", default=str(ROOT / ".workbuddy-ai" / "exports"
                                             / "activation_recovery.json"))
     args = ap.parse_args()
@@ -202,9 +207,17 @@ def main() -> int:
                 "timings": {"activation_recovered_at": now},
             })
         merged, upgraded = ledger.merge_records(existing, updates)
-        ledger.save(out, merged, existing=existing)
-        print(f"台账已更新：{len(updates)} 条激活状态写回 {out}"
-              f"（upgraded={upgraded}）")
+        if ledger.is_ledger_path(out):
+            # 目标在台账目录里 ⇒ 走台账目录：留一份日期/时间戳快照（随即成为
+            # **新读源**），并把合并后的全量刷进 `latest.json`。
+            # 这是"整本重写"而不是跑批，所以不传 `batch`（默认 = 全量）。
+            snap, last = ledger.save_snapshot(merged, existing=existing)
+            print(f"台账已更新：{len(updates)} 条激活状态写回 {snap}"
+                  f"（upgraded={upgraded}）\n  本批结果 {last}")
+        else:
+            ledger.save(out, merged, existing=existing)
+            print(f"台账已更新：{len(updates)} 条激活状态写回 {out}"
+                  f"（upgraded={upgraded}）")
     elif ok:
         print("（未加 --write，台账没改；想写回加 --write）")
 

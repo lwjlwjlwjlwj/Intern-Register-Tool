@@ -48,7 +48,7 @@ from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加�
 from src import ledger  # noqa: E402  （必须在 _path 之后：它才把仓库根加进 sys.path）
 
 DEFAULT_CSV = ROOT / ".workbuddy-ai" / "exports" / "keys_export.csv"
-DEFAULT_LEDGER = ROOT / "results.json"
+DEFAULT_LEDGER = ledger.ledger_path()
 
 
 def read_rows(csv_path: Path) -> list[dict]:

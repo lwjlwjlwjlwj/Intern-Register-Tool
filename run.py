@@ -6,7 +6,19 @@
   python run.py --count 6 --workers 1    # 强制顺序执行（最保守）
   python run.py --count 6 --workers 6    # 6 路并发（实测安全，见下）
   python run.py --headful --count 6      # 有头（弹窗口），只在要肉眼看流程时用
-  python run.py --out keys.json          # 结果落盘
+  python run.py --out keys.json          # 显式导出到指定文件（不落台账快照）
+
+关于 --out（台账落盘，2026-09-20 改）：
+  **默认不填 = 写进台账目录** `ledger/`：
+      ledger/runs/<日期>/results-<时间戳>.json   ← 合并后的**全量**快照（= 读源）
+      ledger/latest.json                         ← **本批结果**（含失败 / 跳过）
+  显式 `--out X` 才是老行为（只写 X、不落快照）。改布局的原因见
+  `src/ledger.py` 的模块 docstring —— 老布局把"历史全量"和"本次结果"挤在
+  仓库根的同一个 `results.json` 里，复盘时只能靠 `.bak-*` 的时间戳猜。
+
+  ⚠ 台账的读源是**最新的那份全量快照**，**不是** `latest.json`。后者只含本批
+    那几十条，拿它当读源 ⇒ 合并基准只剩上一批 ⇒ 台账停止累积、每次跑批覆盖
+    上一次（本项目栽过两次，见 `src/ledger.py`）。
 
 关于 --headless：
   **默认就是无头**（不弹窗口）。要弹窗口用 `--headful`。
@@ -50,10 +62,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from src import ledger as _ledger  # noqa: E402
 from src import proxypool, redact  # noqa: E402
-from src.ledger import load_existing as _load_existing  # noqa: E402
-from src.ledger import merge_records as _merge_records  # noqa: E402
-from src.ledger import save as _save_ledger  # noqa: E402
+from src import report as _report  # noqa: E402
 from src.pipeline import ERR_QUOTA, error_kind_of, run_batch  # noqa: E402
 
 
@@ -72,7 +83,11 @@ def main():
                     help="无头模式（**默认**，不弹窗口）")
     ap.add_argument("--headful", dest="headless", action="store_false",
                     help="有头模式（弹窗口；只在需要肉眼看流程时用）")
-    ap.add_argument("--out", default="results.json", help="结果输出文件")
+    ap.add_argument("--out", default=None,
+                    help="结果输出文件。**不填（默认）= 写进台账目录**："
+                         "ledger/runs/<日期>/results-<时间戳>.json（合并后的全量快照，"
+                         "也是台账读源）+ ledger/latest.json（本批结果）。"
+                         "显式给路径则只写那一个文件、不落快照。")
     ap.add_argument("--overwrite", action="store_true",
                     help="只写本次结果、不合并历史（默认按 email 合并，"
                          "防止一次小规模探测覆盖掉整个账号台账）")
@@ -168,22 +183,47 @@ def main():
         return 4
     wall = time.time() - t0
 
-    out = Path(args.out)
+    # 🔀 落盘位置（2026-09-20 改）
+    #   * `--out` 不填（默认）→ 走**台账目录**：读 `ledger.ledger_path()`
+    #     （= 最新那份全量快照），写 `ledger/runs/<日期>/results-<时间戳>.json`
+    #     全量快照，再把**本批**结果刷进 `ledger/latest.json`。
+    #   * `--out X` 显式给路径 → 老行为，只写 X、不落快照（"导出到别处"用）。
+    # 改之前默认就是仓库根的 `results.json`，于是"历史全量"和"这次跑出来的"
+    # 挤在同一个文件里，仓库根堆了一串手写 `.bak-batchXX-*` 备份，
+    # 复盘时得靠时间戳猜哪个是哪个。
+    out = Path(args.out) if args.out else None
     new_records = [json.loads(r.to_json()) for r in results]
     if args.overwrite:
         merged = new_records
         print(f"\n（--overwrite：只写本次 {len(merged)} 条，不合并历史）")
     else:
-        existing = _load_existing(out)
-        merged, kept, added, upgraded = _merge_records(existing, new_records)
+        # 🔴 读源用 `out or ledger_path()`：`--out` 不填时**必须**读台账读源。
+        #    若这里退化成读"本次要写的那个新文件"，合并就等于没做 ——
+        #    每次运行都从零开始，正是 `--count 1` 把 53 条覆盖成 1 条那条路。
+        #    ⚠ 也不能读 `ledger/latest.json`（本批结果）：它只含上一批，
+        #      同样会让台账停止累积 —— 这正是它**不是读源**的原因。
+        existing = _ledger.load_existing(out or _ledger.ledger_path())
+        merged, kept, added, upgraded = _ledger.merge_records(existing, new_records)
         if kept:
             print(f"\n结果合并：原有 {kept} 条 + 本次新增 {added} 条"
                   + (f"（{upgraded} 条已更新：升级或补全字段）" if upgraded else "")
                   + f" = {len(merged)} 条")
     try:
-        _save_ledger(out, merged, existing=[] if args.overwrite else None)
+        if out is None:
+            # `new_records` 是**本批原始**结果（含失败 / 跳过）→ latest.json；
+            # `merged` 是合并后的**全量** → 快照（也是新的读源）。
+            snap, last = _ledger.save_snapshot(
+                merged, new_records, existing=[] if args.overwrite else None)
+            written = snap
+            print(f"\n台账已落盘：\n"
+                  f"  快照（读源） {snap.relative_to(_ledger.ROOT)}\n"
+                  f"  本批结果     {last.relative_to(_ledger.ROOT)}"
+                  f"（{len(new_records)} 条）")
+        else:
+            written = _ledger.save(
+                out, merged, existing=[] if args.overwrite else None)
     except ValueError as ex:
-        # 防静默缩水护栏（src/ledger.save）。少数据但指标全"正常"是最坏的失败，
+        # 防静默缩水护栏（src/ledger）。少数据但指标全"正常"是最坏的失败，
         # 宁可报错退出也不要静默丢掉账号。
         print(f"✗ {ex}", file=sys.stderr)
         return 3
@@ -193,7 +233,7 @@ def main():
     bad = [r for r in results if r.status not in ("success", "skipped")]
 
     print(f"\n{'=' * 72}")
-    print(f"DONE: {len(ok)}/{len(results)} succeeded -> {out.resolve()}")
+    print(f"DONE: {len(ok)}/{len(results)} succeeded -> {written.resolve()}")
     if skipped:
         print(f"      {len(skipped)} 个被配额保护跳过（未发请求，非失败）")
 
@@ -224,16 +264,17 @@ def main():
               f"{_fmt_ms(tm.get('key')):>7s} "
               f"{total_s:>7s}")
     if totals:
-        import statistics as _st
         # 表头单独取变量：原来写成 `{'…%d…' % len(totals):40s}` 嵌在 f-string 里，
         # 两种插值语法叠在一起，UP031 会报。提取后只剩一种。
         _hdr = f"── 统计（{len(totals)} 个完整样本）"
-        print(f"  {_hdr:40s} "
+        print(f"  {_hdr:40s}")
+        # 🔴 四个标签和四个取值**必须在同一个 print 里**。
+        #    原来把「均值」单独留在上面那行的合计列，这一行仍写四个标签却只给
+        #    三个值 ⇒ 读者按左对齐会把 39.1（真正的**最慢**）读成「最快」。
+        #    （2026-09-20 复跑时按日志原始表格复算才发现：数字没错，是标签错位。）
+        print(f"  {'   ' + _report.LATENCY_LABELS:40s} "
               f"{'':>7s} {'':>7s} {'':>7s} "
-              f"{_st.mean(totals):>7.1f}")
-        print(f"  {'   均值 / 中位 / 最快 / 最慢':40s} "
-              f"{'':>7s} {'':>7s} {'':>7s} "
-              f"{_st.median(totals):>7.1f} / {min(totals):.1f} / {max(totals):.1f}")
+              f"{_report.latency_summary(totals)}")
 
     # 登录内部阶段。
     # 🔴 看**最慢**的那个，不是第一个 —— 批量吞吐由关键路径（最慢账号）决定，

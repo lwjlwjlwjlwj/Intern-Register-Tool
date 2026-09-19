@@ -211,7 +211,8 @@ src/
   pipeline.py          端到端编排（两段式流水线 + `QuotaGovernor` 配额决策）
   quota.py             注册配额的本地累计计数与保护（见「注册配额」一节）
   proxypool.py         槽位代理池（一槽一端口 = 一个固定出口 IP，租约式分配 + 状态落盘）
-  ledger.py            账号台账（results.json）的读写与合并 —— **所有会写台账的工具都必须用它**
+  ledger.py            账号台账（`ledger/` 目录；读源 = 最新那份**全量**快照）的读写与合并
+                       —— **所有会写台账的工具都必须用它**
   redact.py            脱敏助手（日志 / 输出边界必须过这里，见 docs/security-conventions.md）
 
 tests/                 pytest 行为测试 —— 断言从已移除的 `tools/selftests/*.py` **保真迁移**而来
@@ -953,7 +954,7 @@ python tools/probes/probe_balance.py --show-ok    # 连未消耗的也逐条列
 
 ```bash
 python -m src.quota                                  # 只看状态，不跑任何流程
-python -m src.quota backfill results.json            # 补录一个结果文件
+python -m src.quota backfill ledger/runs/*/results-*.json   # 补录台账快照（重复项自动去重）
 python -m src.quota backfill tmp/*.json backup.zip --dry-run   # 先看看会补多少
 ```
 
@@ -1678,12 +1679,18 @@ D1 database_id 在 `wrangler.toml` 的 `database_id` 字段里（也可用 `wran
 **救已注册但没激活的账号**：`tools/data/recover_activation.py`
 
 ```bash
+# `--from` 要传**台账读源**（`runs/` 里最新的全量快照）。取路径：
+python -c "from src import ledger; print(ledger.ledger_path())"
+
 # 列出候选（判据：stages.register == "ok" 且 activate 未成功）
-python tools/data/recover_activation.py --from results.json --dry-run
+python tools/data/recover_activation.py --from <台账读源> --dry-run
 
 # 真补激活，并把结果并集写回台账
-python tools/data/recover_activation.py --from results.json --write
+python tools/data/recover_activation.py --from <台账读源> --write
 ```
+
+⚠ **不要**传 `ledger/latest.json` —— 它只含最近一批那几十条，历史账号不在
+里面，候选会少一个数量级，而且**不报错**。
 
 判据卡在 `stages.register == "ok"` 上，**不是**只看 `status == "failed"` ——
 注册本身失败的账号（`B0000` 之类）服务端根本没这个账号，补激活无从谈起。
@@ -1807,7 +1814,45 @@ done             +  0.00s
 
 ## 输出
 
-`results.json` 每个账号一条记录（字段顺序就是 `AccountRecord.to_json()` 的顺序）：
+### 台账落盘：`ledger/` 目录 + 日期 / 时间戳快照
+
+`run.py --out` **不填时**（默认），台账落在仓库根的 `ledger/` 目录：
+
+```
+ledger/runs/2026-09-20/results-20260920-061230.json   ← 读源（**合并后的全量**）
+ledger/runs/2026-09-20/results-20260920-055527.json   ← 上一份快照（回滚点）
+ledger/latest.json                                    ← **本批结果**（含失败 / 跳过）
+```
+
+两个文件职责**不同**，混用是这块最容易踩的坑：
+
+| 文件 | 内容 | 谁读它 |
+|---|---|---|
+| `runs/<日期>/results-<时间戳>.json` | **合并后的累计全量**（按 email 合并） | **所有工具** —— 它就是台账读源 |
+| `ledger/latest.json` | **最近一次落盘写进去的记录**（跑批 = 本批含失败 / 跳过；整本重写 = 全量） | 只给人看「这次写了什么」 |
+
+四条规则，缺一条都会把台账搞坏：
+
+1. **读源是「最新的那份快照」，不是 `latest.json`。** 后者只含本批那几十条，
+   拿它当读源 ⇒ 下一次运行合并的基准只剩上一批 ⇒ **台账停止累积、每次跑批
+   覆盖上一次**（本项目栽过两次，第二次是 `--count 1` 把 53 条覆盖成 1 条）。
+2. **快照里是「合并后的全量」，不是本次那几条。** 若只存本次结果，
+   下一次运行读到的历史就只有上次那几条 ⇒ 台账被切碎 ⇒ 同上。
+3. **`latest.json` 是内容副本，不是软链。** Windows 建软链要开发者模式；
+   而「读不到台账」在本项目是最高危的静默失败（见「台账类用例」一节）。
+   两个文件都用「写同目录临时文件 + 原子替换」刷新，读者永远看到完整的 JSON。
+4. **写顺序是「先快照、后刷本批」。** 反过来的话，第二步失败就变成
+   「读源已更新、快照没留下」—— 这次落盘没有回滚点。
+
+`--out X` 显式给路径则是老行为：只写 `X`、**不落快照**（导出到别处用）。
+
+取台账路径**一律**用 `ledger.ledger_path()`，别自己拼、也别拿 `latest.json`
+顶替。读源每次落盘都换名字（时间戳），所以它是**算出来的**，不是常量；
+把它冻进模块级常量，会让「读 → 跑 → 写回」的流程把结果写回**旧快照**。
+整个 `ledger/` 目录在 `.gitignore` 里（里面是明文凭据），规则**按目录写**
+而不是靠 `*.json` 通配兜底 —— 详见 `docs/security-conventions.md`「目录规范」。
+
+每个账号一条记录（字段顺序就是 `AccountRecord.to_json()` 的顺序）：
 
 ```json
 {
@@ -1905,15 +1950,15 @@ quota guard: 已确认 B0000（累计配额触顶），未发注册请求
 
 ## ⚠️ 结果文件可能变成**唯一副本**
 
-`results.json`（含明文账号密码 + key + JWT）是 gitignored 的，**不在仓库里**。
-而它很容易被当成"临时文件"清掉 —— 本项目就真发生过：
+台账（`ledger/` 目录，含明文账号密码 + key + JWT）是 gitignored 的，
+**不在仓库里**。而它很容易被当成"临时文件"清掉 —— 本项目就真发生过：
 
 ```
 09-15  清理临时文件 → 打包备份到 _backups/Intern-Register-Tool-tmp-20260915.zip
 09-16  _backups/ 整个目录被删 → 那 38 个账号的 key 只剩导出的 CSV 里有
 ```
 
-**一旦 `results.json` 和备份都没了，那批账号就永久失去访问凭据**（邮箱是临时邮箱，
+**一旦台账和备份都没了，那批账号就永久失去访问凭据**（邮箱是临时邮箱，
 收不到信；密码只存在于结果文件里）。key 本身还能用，但你再也查不到它的明文。
 
 两道保险：
@@ -1930,15 +1975,20 @@ python tools/data/export_keys.py
 > 否则"来源被删"会让重跑**静默缩水**（53 把变 15 把），
 > 而这种失败不会报错、不会提示，只会在某天你发现 key 少了一半时才暴露。
 
-### 🔴 `results.json` 同时是"运行报告"和"账号台账" —— 合并规则必须只有一处实现
+### 🔴 台账同时是"运行报告"和"账号台账" —— 合并规则必须只有一处实现
 
-`results.json` 是 `run.py --out` 的默认目标。后果是**一次小规模运行就能把台账覆盖掉**：
+台账曾经是仓库根的一个 `results.json`，而它同时是 `run.py --out` 的默认目标。
+后果是**一次小规模运行就能把台账覆盖掉**：
 
 ```
 09-18  跑 `run.py --count 1` 探测服务端是否解封 → 53 条台账被覆盖成 1 条
 ```
 
 （这已经是**第二次**同类事故 —— 第一次是 `_backups/` 被清理。）
+
+2026-09-20 起台账搬进 `ledger/` 目录，每次落盘留一份日期 / 时间戳快照，
+所以即使真被覆盖，`runs/` 里上一份快照还在。但这**没有放宽**下面这条规则 ——
+合并保证的是**读源本身**永远不缩水，快照只兜住「还能捞回来」。
 
 修复分三层，全部落在 `src/ledger.py`，**被所有会写台账的工具复用**
 （`run.py` / `tools/run_downstream.py` / `tools/data/recover_activation.py` 用
@@ -1960,8 +2010,9 @@ python tools/data/export_keys.py
    > （自测 `T9` 当场抓到）。**并集没有这个漏洞** —— 它不靠猜，
    > 数学上保证字段只增不减。
 
-4. **防静默缩水护栏**：`ledger.save()` 发现"合并后条数 < 原有条数"直接抛异常、
-   退出码 3，宁可报错也不静默丢账号。要显式覆盖得用 `run.py --overwrite`。
+4. **防静默缩水护栏**：`ledger.save()` / `ledger.save_snapshot()` 发现
+   "合并后条数 < 原有条数"直接抛异常、退出码 3，宁可报错也不静默丢账号。
+   要显式覆盖得用 `run.py --overwrite`。
 
 ### 重建台账时的合并规则**不同**（`merge_fragments`）
 
@@ -1995,7 +2046,8 @@ python -m pytest tests/test_ledger_merge.py tests/test_ledger_fragments.py
 （台账是活的：每跑一次批量注册就变多，写死条数的话下次正常注册就会被判
 "测试失败" —— 那是测试在撒谎，不是代码坏了）。
 
-但真实台账 `results.json` 含凭据、**不在仓库里** ⇒ CI 上读到的是 `[]`。
+但真实台账（`ledger/runs/<日期>/results-<时间戳>.json`，读源 = 最新那份）
+含凭据、**不在仓库里** ⇒ CI 上读到的是 `[]`。
 **空输入是最坏的一种降级**：它不报错，而是让每个用例以各自的形态给出
 无意义的结论 —— 2026-09-19 CI 第二次变红时，同一个根因炸出了四种形态：
 
@@ -2159,11 +2211,11 @@ python run.py --headful       # 要弹窗口时显式指定
 - 工具**不绕过任何付费环节**，也不篡改额度 —— 领的就是平台公开提供的免费额度
 - 使用产生的任何后果由使用者自行承担
 
-仓库内**不含任何真实账号数据**。`results.json`（含明文账号/密码/JWT/API Key）、
+仓库内**不含任何真实账号数据**。`ledger/`（含明文账号/密码/JWT/API Key）、
 `.env`（含 Admin Token）、`.workbuddy-ai/`（本地开发记录）均已在 `.gitignore` 中排除。
 
 唯一的例外是 `tests/fixtures/ledger_sample.json` —— 一份**脱敏样本台账**，
-16 条记录、字段形状逐档复刻真实 `results.json`（14 / 33 / 34 键的成功记录、
+16 条记录、字段形状逐档复刻真实台账（14 / 33 / 34 键的成功记录、
 空 email 的配额拦截记录、9 键的 `export_keys` 导出行、`0` / `False` / `None` /
 `""` / `{}` / `[]` / 非 ASCII 值），但**值全是编造的**，email 只用 RFC 2606
 保留域 `example.com`。它存在的原因是：真实台账含凭据、不入库 ⇒ CI 上读不到 ⇒

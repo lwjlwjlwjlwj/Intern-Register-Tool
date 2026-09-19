@@ -8,7 +8,7 @@ r"""把配额台账的 scope 从「槽位位置号」迁移成「出口 IP」。
 加一个出口、删一个死掉的出口、或者调一下顺序，**所有位置号的含义就整体平移**，
 既有记录会静默错配到别的出口 IP 头上。
 
-本项目实测已经踩到过。用 `results.json` 里每条记录的 `proxy_slot`
+本项目实测已经踩到过。用台账里每条记录的 `proxy_slot`
 （形如 `slot2(http://127.0.0.1:7903)`，里面带着**当时的真实端口**）
 做交叉表，台账里出现了 3 条错配：
 
@@ -26,7 +26,7 @@ r"""把配额台账的 scope 从「槽位位置号」迁移成「出口 IP」。
 
 怎么定位每条记录的真实出口
 --------------------------
-`results.json` 的 `proxy_slot` 字段里存着**当时的真实端口**，
+台账的 `proxy_slot` 字段里存着**当时的真实端口**，
 用 `email` 做键关联即可。关联不上的记录（池化之前那批，没有 `proxy_slot`）
 **保持原样** —— 它们本来就没有出口归属，不该硬塞一个。
 
@@ -49,17 +49,17 @@ from pathlib import Path
 
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
-from src import config  # noqa: E402
+from src import config, ledger  # noqa: E402
 
 DEFAULT_LEDGER = ROOT / ".workbuddy-ai" / "state" / "register_quota.jsonl"
-DEFAULT_RESULTS = ROOT / "results.json"
+DEFAULT_RESULTS = ledger.ledger_path()
 
 # 从 `slot2(http://127.0.0.1:7903)` 里把端口抠出来。
 _PORT_RE = re.compile(r":(\d+)\s*\)")
 
 
 def load_email_to_ip(results_path: Path) -> dict[str, str]:
-    """`results.json` → {email: 出口 IP}。
+    """台账 → {email: 出口 IP}。
 
     用 `proxy_slot` 里的**真实端口** + `config.SLOT_EGRESS_IPS` 换算成 IP。
     端口不在映射表里就跳过（宁可少迁，不可迁错）。
@@ -112,7 +112,7 @@ def main() -> int:
 
     e2ip = load_email_to_ip(Path(args.results))
     rows = read_ledger(ledger_path)
-    print(f"台账 {len(rows)} 条；results.json 能关联出出口 IP 的 {len(e2ip)} 条\n")
+    print(f"台账 {len(rows)} 条；台账能关联出出口 IP 的 {len(e2ip)} 条\n")
 
     # ── 迁移 ──────────────────────────────────────────────────────
     before = collections.Counter()

@@ -3,7 +3,8 @@ r"""从账号台账里剪掉**没有账号信息的空记录**（配额守卫中
 
 为什么需要它
 ------------
-`results.json` 同时是"运行报告"和"账号台账"。配额守卫主动中止的账号
+台账（`ledger/runs/<日期>/results-<时间戳>.json`，读源 = 最新那份全量快照）同时是
+"运行报告"和"账号台账"。配额守卫主动中止的账号
 （`status="skipped"`，`error` 形如 `quota guard: ... 未发请求`）**会被写进台账**，
 但它们**一个字段都没有** —— email / username / password / jwt / api_key
 全是空串，`stages` 是 `{}`。
@@ -35,15 +36,28 @@ r"""从账号台账里剪掉**没有账号信息的空记录**（配额守卫中
 
 备份与回滚
 ----------
-`--apply` 会先写一份**同目录**备份 `<results>.bak-prune-<时间戳>`，再原子替换。
+`--apply` 会先写一份**同目录**备份 `<目标>.bak-prune-<时间戳>`。
+
+目标在不在**台账目录**（`ledger/`）里决定之后写去哪：
+
+  * 在 ⇒ 走 `ledger.save_snapshot()`：剪完的全量落一份
+    `ledger/runs/<日期>/results-<时间戳>.json` 快照，**它同时成为新读源**
+    （`ledger.ledger_path()` 指向最新快照，不是 `latest.json`）；
+  * 不在（`--results x.json` 那种导出用法）⇒ 只写那一个文件。
+
+⚠ 快照与备份**不是一回事**：快照是"这次剪**之后**"的状态，备份是"剪**之前**"
+的状态 —— 排查"到底剪掉了什么"时两个都要看。
+
+⚠ 台账目录分支**不动**原文件：原快照还在原地，只是不再是"最新"。所以回滚是
+**删掉刚生成的那份新快照**（读源自动退回上一份），而不是往哪拷回去。
 
 🔴 备份名**必须**落在 `.bak*` 家族里。本项目 `.gitignore` 只按家族写
 （`*.bak*` / `*.old` / `*.save*` / `*.tmp*` …），**不覆盖 `.pre-*`**
 （`migrate_quota_scope.py` 用的是 `.pre-scope-migrate-<ts>`，那是因为它的目标
-在 `.workbuddy-ai/state/` 整个目录都被忽略；`results.json` 在仓库根，
-照抄那个命名会让一份**含明文凭据**的备份变成未忽略文件，被泄漏闸门拦下）。
+在 `.workbuddy-ai/state/` 整个目录都被忽略）。台账目录里是**明文凭据**，
+照抄那个命名会让一份未忽略的备份被泄漏闸门拦下。
 
-回滚：`cp results.json.bak-prune-<时间戳> results.json`
+回滚（默认目标）：删掉打印出来的那份新快照即可；要留证据就先看一眼它和 `.bak-prune-*`。
 
 用法
 ----
@@ -67,7 +81,7 @@ from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加�
 
 from src import ledger  # noqa: E402
 
-DEFAULT_RESULTS = ROOT / "results.json"
+DEFAULT_RESULTS = ledger.ledger_path()
 
 # 任何一项非空 = 这条记录**认领了一个身份**，不能剪。
 # 刻意把 `email` 放进来：它同时是 merge 的键，也是"我们真的走到建号那一步了"的证据。
@@ -147,20 +161,33 @@ def main() -> int:
     bak = path.with_name(path.name + f".bak-prune-{ts}")
     shutil.copy2(path, bak)
 
-    tmp = path.with_name(path.name + ".tmp")
-    # 走 `ledger.save` 而不是自己 json.dump：序列化格式（indent=2 /
-    # ensure_ascii=False）只有一处实现，别在这里分叉。
-    # `existing=[]` 是那个"防静默缩水"护栏的**官方逃生口** —— 缩水在这里
-    # 是本次操作的**目的**，所以显式声明；护栏本身对非预期缩水仍然有效。
-    ledger.save(tmp, kept, existing=[])
-    os.replace(tmp, path)
-
-    print(f"\n✅ 已写入 {path}（{len(recs)} → {len(kept)} 条）")
-    print(f"   备份：{bak}")
-    print(f"   回滚：cp {bak.name} {path.name}")
+    # `existing=[]` 是"防静默缩水"护栏的**官方逃生口** —— 缩水在这里是本次
+    # 操作的**目的**，所以显式声明；护栏本身对非预期缩水仍然有效。
+    # 🔴 目标在不在**台账目录**里决定落点：
+    #    在 → 走 `save_snapshot()`，剪完的全量留一份日期/时间戳快照（并成为新读源）；
+    #    不在 → 只写用户给的那个文件（`--results x.json` 的导出用法）。
+    # 两条路都走 `ledger` 的落盘函数而不是自己 json.dump：序列化格式
+    # （indent=2 / ensure_ascii=False）与原子写只有一处实现，别在这里分叉。
+    if ledger.is_ledger_path(path):
+        snap, last = ledger.save_snapshot(kept, existing=[])
+        dest = snap
+        print(f"\n✅ 已写入 {snap}（{len(recs)} → {len(kept)} 条）")
+        print(f"   本批结果：{last}")
+        print(f"   备份：{bak}")
+        # 回滚 = 删掉刚生成的快照；读源（`ledger_path()` = 最新快照）会自动
+        # 退回上一份，也就是 `path` 本身（它没被改动过）。
+        print(f"   回滚：删除 {snap.name}（读源会自动退回上一份快照）")
+    else:
+        tmp = path.with_name(path.name + ".tmp")
+        ledger.save(tmp, kept, existing=[])
+        os.replace(tmp, path)
+        dest = path
+        print(f"\n✅ 已写入 {dest}（{len(recs)} → {len(kept)} 条）")
+        print(f"   备份：{bak}")
+        print(f"   回滚：cp {bak} {path}")
 
     # 回读校验：条数对得上、每条都能解析、没剪掉带凭据的
-    back = json.loads(path.read_text(encoding="utf-8"))
+    back = json.loads(dest.read_text(encoding="utf-8"))
     assert len(back) == len(kept), f"条数对不上！{len(kept)} -> {len(back)}"
     assert not any(is_noise(r) for r in back), "回读后仍有可剪记录"
     print(f"   回读校验：{len(back)} 条，无残渣 ✅")

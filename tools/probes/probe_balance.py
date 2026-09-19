@@ -41,7 +41,9 @@ from pathlib import Path
 
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
-DEFAULT_IN = ROOT / "results.json"
+from src import ledger  # noqa: E402  （必须在 _path 之后：它才把仓库根加进 sys.path）
+
+DEFAULT_IN = ledger.ledger_path()
 DEFAULT_OUT = ROOT / ".workbuddy-ai" / "exports" / "balance_dump.json"
 
 

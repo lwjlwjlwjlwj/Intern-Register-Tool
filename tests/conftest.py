@@ -18,10 +18,11 @@
 ----------------------------------------------------------------------------
 🔴 2026-09-19 CI 连续红了三批，第二批的根因就在这里。
 
-`results.json` 同时是"运行报告"和"账号台账"，但它**含可直接登录的账号与
-API Key**，所以被 `.gitignore` 排除、**不在仓库里** ⇒ CI 上 `load_existing()`
-返回 `[]`。而当时两个测试文件各自定义了一个 `real` 夹具把它读进来，
-于是同一个根因在 CI 上炸出**三种完全不同的形态**：
+台账读源（`ledger/runs/<日期>/results-<时间戳>.json`，最新那份全量快照）同时是
+"运行报告"和"账号台账"，但它**含可直接
+登录的账号与 API Key**，所以被 `.gitignore` 排除、**不在仓库里** ⇒ CI 上
+`load_existing()` 返回 `[]`。而当时两个测试文件各自定义了一个 `real` 夹具把它
+读进来，于是同一个根因在 CI 上炸出**三种完全不同的形态**：
 
     AssertionError: 读不到 results.json     ← 显式断言
     StopIteration                           ← next() 找不到 status=success 的记录
@@ -55,14 +56,32 @@ ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_LEDGER = ROOT / "tests" / "fixtures" / "ledger_sample.json"
 
 # 真实台账。含明文账号 / 密码 / JWT / API Key ⇒ 被 .gitignore 排除 ⇒ CI 上不存在。
-REAL_LEDGER = ROOT / "results.json"
+# 🔴 路径**必须**从 `ledger.ledger_path()` 取，不要写 `ROOT / "results.json"`。
+#    2026-09-20 台账搬进 `ledger/` 目录后，写死的旧路径会静默变成"文件不存在"
+#    ⇒ `real_ledger` 夹具 `pytest.skip` ⇒ **本地的真实台账用例全部悄悄不跑了**。
+#    跳过不是失败，所以这件事不会有任何红灯提醒你。
+#
+# ⚠ 用 `ledger_path()`（= `runs/` 里最新的**全量**快照），**不是** `latest_path()`
+#   （`ledger/latest.json` 只含最近一批那几十条）。读后者会让依赖真实台账的
+#   用例拿到一个**只有本批**的池子 —— 用例照样绿，只是覆盖的账号少了一个数量级。
+REAL_LEDGER = ledger.ledger_path()
 
 
 @pytest.fixture(autouse=True)
 def _isolate_runtime_state(tmp_path, monkeypatch):
-    """把池子状态与配额台账都指到本用例的 tmp 目录。"""
+    """把池子状态、配额台账、**台账目录**都指到本用例的 tmp 目录。"""
     monkeypatch.setenv("IR_PROXY_STATE", str(tmp_path / "proxypool.json"))
     monkeypatch.setenv("IR_QUOTA_STATE", str(tmp_path / "register_quota.jsonl"))
+    # 🔴 台账目录必须一起隔离。`ledger.save_snapshot()` 会往 `LEDGER_DIR` 底下
+    #    写**两个**文件：`runs/<日期>/results-<时间戳>.json`（全量台账，也是读源）
+    #    与 `latest.json`（本批结果）—— 那都是**用户的真实台账**（517 条明文凭据）。
+    #    测试里放任它写，一个 `save_snapshot()` 调用就能把整份台账覆盖成用例里
+    #    那几条。
+    #    ⚠ 隔离的粒度是**目录**，不是某一个文件：读源每次落盘都换名字，只把
+    #      `latest.json` 指走的话，快照照样会写进真实目录。
+    #    这与开头 ①② 是同一类事故（"假槽位覆盖真实冷却记录"），只是更致命：
+    #    冷却记录丢了下次跑批退避重来，台账丢了那批账号就**永久失去访问凭据**。
+    monkeypatch.setattr(ledger, "LEDGER_DIR", tmp_path / "ledger")
 
 
 @pytest.fixture(scope="session")

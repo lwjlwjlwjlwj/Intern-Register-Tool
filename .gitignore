@@ -46,7 +46,16 @@
 
 
 # ── 3. 运行产物 —— 结果里含明文账号 / 密码 / JWT / API Key ─────────
-# run.py 的 results.json 里是可直接登录的账号；keys_export.* 里是 API Key
+# 🔴 台账目录（2026-09-20 起，见 src/ledger.py 的模块 docstring）：
+#      ledger/runs/<日期>/results-<时间戳>.json   ← **读源**（合并后的全量）
+#      ledger/latest.json                         ← 本批结果（⚠ 不是读源）
+#    里面是**明文账号 / 密码 / JWT / API Key**，整个目录排除。
+#    刻意不靠下面的 `*.json` 兜底：那条是通配，哪天有人往目录里放个
+#    `README.md` / `notes.md` 就漏了 —— 而"按家族写规则"是本文件的铁律。
+ledger/
+# 老布局的仓库根结果文件。**已退役**（`run.py --out` 默认不再是它），
+# 但本机可能还留着历史文件，规则继续保留 —— 删规则 = 让一份含凭据的旧文件
+# 变成未忽略文件。
 results.json
 keys.json
 accounts.json

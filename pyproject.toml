@@ -45,7 +45,8 @@ testpaths = ["tests"]
 #    需要 pytest >= 7.0（`pythonpath` 内建支持）。
 pythonpath = ["."]
 # 🔴 `-rs` 让"跳过的用例"把**原因**打出来。
-#    本项目有一类用例只在本地有真实台账（`results.json`）时才跑，
+#    本项目有一类用例只在本地有真实台账（读源 = `ledger/runs/.../results-*.json`）
+#    时才跑，
 #    CI 上必然跳过（见 tests/conftest.py）。不加 `-rs` 的话 CI 日志里
 #    只会多几个 `s`，看的人没法判断"是环境缺数据"还是"有人偷偷把测试禁了"。
 #

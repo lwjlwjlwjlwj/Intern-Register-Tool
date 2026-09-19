@@ -1,12 +1,42 @@
-"""账号台账（`results.json`）的读写与合并。
+"""账号台账（`ledger/` 目录）的读写与合并。
 
-为什么单独成一个模块
---------------------
-台账同时是 `run.py --out` 的默认目标，所以**一次小规模运行就可能把它覆盖掉**。
-本项目已经栽过两次：
+台账长什么样（2026-09-20 第二次改）
+----------------------------------
+    ledger/runs/2026-09-20/results-20260920-061230.json   ← **读源**（全量台账）
+    ledger/runs/2026-09-20/results-20260920-055527.json   ← 上一份快照（回滚点）
+    ledger/latest.json                                    ← **本批结果**（含失败/跳过）
 
-  1. `_backups/` 被清理 → 38 个账号的记录只剩导出 CSV 里有一份
-  2. `run.py --count 1`（探测服务端是否解封）→ 把 53 条台账**覆盖成 1 条**
+两个文件职责**不同**，混用是本模块最大的坑：
+
+  * `runs/` 里的快照 = **按 email 合并后的累计全量**；读源是**最新那一份**；
+  * `latest.json`     = **最近一次落盘写进去的记录**，只给人看"这次写了什么"：
+    跑批场景（`run.py`）= **本批**（含失败 / 跳过）；整本重写的工具
+    （`prune_ledger` / `restore_results` / `run_downstream`）= 全量。
+
+🔴 为什么 `latest.json` 不能当读源
+---------------------------------
+它只含本批那几十条。拿它当读源 ⇒ 下一次运行合并的基准只有上一批 ⇒
+**台账停止累积、每次跑批覆盖上一次**。本项目栽过两次，第二次就是
+`run.py --count 1`（探测服务端是否解封）把 53 条台账**覆盖成 1 条**。
+
+而 `check_keys_alive.py` / `probe_login_only.py` / `migrate_quota_scope.py`
+做的是**覆盖率对账**（"台账 N 把 / 快照 M 把"）。读源只有本批的话，它们会报
+"全绿"但**只覆盖了最后一批** —— 这是本项目最警惕的**文件级静默缩水**：
+行级缩水至少分母变了，文件级缩水连**分母本身**都是错的。
+
+所以要"`latest.json` 只留本批"，前提是**全量台账另有归属** —— 就是快照。
+
+为什么要单起目录
+----------------
+台账同时是 `run.py --out` 的默认目标，所以**一次小规模运行就可能把它覆盖掉**
+（上面那个 53→1 的事故）。老布局还把"历史全量"和"这次跑出来的"塞进同一个
+根文件，于是仓库根堆了一串手写备份（`results.json.bak-batch50b-*` …），
+复盘时得靠时间戳猜哪个是哪个。新布局按**日期分目录 + 时间戳命名**，
+快照本身就是可回滚点。
+
+`latest.json` 用"写同目录临时文件 + 原子替换"刷新，读者永远看到一个完整的
+JSON（不是软链 —— Windows 建软链要开发者模式，而"读不到台账"在本项目是
+最高危的静默失败，`tests/conftest.py` 记过它在 CI 上炸出的三种形态）。
 
 所以"合并而不是覆盖"这条规则必须**只有一处实现**，被所有会写台账的工具复用
 （`run.py` / `tools/run_downstream.py` / `tools/data/recover_activation.py` 用
@@ -17,7 +47,106 @@
 """
 
 import json
+import os
+import re
+import time
 from pathlib import Path
+
+# 台账目录：仓库根下的 `ledger/`（整个目录被 .gitignore 忽略 —— 里面是明文凭据）。
+# ⚠ 用 `Path(__file__).resolve().parents[1]` 而不是 `Path.cwd()`：cwd 是调用者的，
+#   从别的目录跑 `python tools/xxx.py` 会把台账写到别处去。
+ROOT = Path(__file__).resolve().parents[1]
+LEDGER_DIR = ROOT / "ledger"
+RUNS_DIRNAME = "runs"
+SNAPSHOT_STEM = "results"
+# **本批结果**的文件名。⚠ 它不是台账、**不能当读源**（见模块 docstring）。
+LAST_RUN_NAME = "latest.json"
+
+# 快照文件名的**严格**形状：`results-YYYYMMDD-HHMMSS.json`。
+# 🔴 用正则筛，不用 `glob("*.json")`：`runs/` 是个人工可写的目录，一个
+#    `notes.json` / `results.json.bak` / `results-tmp.json` 落进去，按"最新"
+#    （mtime 或字典序）就会被当成台账读源 —— 于是缩水护栏的分母、`--count`
+#    的取样池全跟着变，而且**全程不报错**。
+SNAPSHOT_RE = re.compile(rf"^{SNAPSHOT_STEM}-(\d{{8}})-(\d{{6}})\.json$")
+
+
+def snapshot_path(when=None) -> Path:
+    """新快照的落点：`ledger/runs/<YYYY-MM-DD>/results-<YYYYMMDD-HHMMSS>.json`。
+
+    按**本地日期**分目录（复盘时想的是"那天那批"），文件名用 `YYYYMMDD-HHMMSS`
+    时间戳 —— 与 `.workbuddy-ai/backups/results-20260918-103003.json` 既有命名一致。
+
+    `when` 传 epoch 秒（不传 = 现在）。存在的唯一理由是让测试能钉住路径格式，
+    生产代码不该传。
+    """
+    t = time.localtime() if when is None else time.localtime(when)
+    return (LEDGER_DIR / RUNS_DIRNAME / time.strftime("%Y-%m-%d", t)
+            / f"{SNAPSHOT_STEM}-{time.strftime('%Y%m%d-%H%M%S', t)}.json")
+
+
+def snapshot_paths() -> list:
+    """`runs/` 下所有**命名合规**的快照，按时间**升序**。
+
+    排序键取**文件名里的时间戳**，不取 mtime —— mtime 会被 `cp -p` / 解压 /
+    同步工具改掉，而文件名是落盘那一刻写死的。`YYYYMMDD-HHMMSS` 定长零填充，
+    所以字典序就是时间序，不需要解析。
+
+    按 `(日期目录名, 文件名)` 两级排序：跨天的快照也排得对（同一天内文件名
+    已经带日期，但万一有人把文件挪到别的日期目录下，两级排序至少不会错得更乱）。
+    """
+    runs = LEDGER_DIR / RUNS_DIRNAME
+    if not runs.is_dir():
+        return []
+    found = [p for p in runs.glob(f"*/{SNAPSHOT_STEM}-*.json")
+             if SNAPSHOT_RE.match(p.name)]
+    return sorted(found, key=lambda p: (p.parent.name, p.name))
+
+
+def ledger_path() -> Path:
+    """台账的**唯一读源**：`runs/` 里**最新的那份全量快照**。
+
+    所有"读台账"的工具都该用这个函数取路径，不要自己拼
+    `ROOT / "results.json"`，也不要拿 `latest_path()` 顶替 —— 后者只含本批，
+    读它会让合并退化成"每次从零开始"（本项目栽过两次，见模块 docstring）。
+    路径一旦有两处实现，改布局时必然漏掉一处，而漏掉的表现是
+    `load_existing()` 静默返回 `[]`（文件不存在不抛异常，见它的 docstring）。
+
+    🔴 每次调用都**重新扫目录**，不要冻进模块级常量。
+       `tools/run_downstream.py` 那种"先读台账 → 跑 → 再写回台账"的流程里，
+       常量会一直指向**落盘之前**那份快照 ⇒ 写回去等于覆盖掉刚生成的新快照。
+
+    没有任何快照时返回一个**永不存在的占位路径**：让 `load_existing()` 按契约
+    返回 `[]`，而不是抛异常 —— 一个空的台账目录不该让工具起不来。
+    """
+    snaps = snapshot_paths()
+    if snaps:
+        return snaps[-1]
+    return (LEDGER_DIR / RUNS_DIRNAME / "__none__"
+            / f"{SNAPSHOT_STEM}-none.json")
+
+
+def last_run_path() -> Path:
+    """**本批结果**的落点：`ledger/latest.json`。
+
+    ⚠ 这不是台账、**不能当读源**。它只含最近一次落盘那批的记录，历史账号不在
+      这里。读台账一律用 `ledger_path()`。
+    """
+    return LEDGER_DIR / LAST_RUN_NAME
+
+
+def is_ledger_path(path) -> bool:
+    """这个路径是不是落在**项目台账目录**里（而不是随便一个导出文件）。
+
+    各工具用它决定"这是正式落盘（要留快照）还是导出到别处（不留）"。
+
+    判据是"在 `LEDGER_DIR` 底下"，**不是**"等于读源" —— 读源每次落盘都换名字，
+    拿它做相等比较必然漏：第二次落盘之后，`--out` 传进来的旧路径就"不是台账"了，
+    于是它会退化成只写那一个文件、不留快照。
+    """
+    try:
+        return Path(path).resolve().is_relative_to(LEDGER_DIR.resolve())
+    except (OSError, ValueError):
+        return False
 
 # 记录"优劣"排序：成功 > 跳过 > 失败。合并时不让失败盖掉成功。
 _RANK = {"success": 2, "skipped": 1}
@@ -224,19 +353,85 @@ def merge_fragments(records: list[dict]) -> dict:
     return out
 
 
-def save(path, records: list[dict], *, existing: list[dict] = None) -> None:
-    """写台账，带**防静默缩水**护栏。
+def _guard_no_shrink(records: list[dict], existing) -> None:
+    """合并后条数**少于**原有就抛 `ValueError`（`existing=None` 表示不检查）。
 
-    `existing` 传入"写之前文件里有什么"。合并后条数若**少于**原有，
-    直接抛 `ValueError` —— 少数据但所有指标都"正常"是最坏的一类失败，
-    宁可报错也不要静默丢掉账号。
+    少数据但所有指标都"正常"是最坏的一类失败 —— 宁可报错也不要静默丢账号。
+    逃生口是 `existing=[]`：显式声明"这次缩水是我要的"
+    （`tools/data/prune_ledger.py` 就是唯一那个正当用法）。
     """
-    p = Path(path)
     if existing is None:
-        existing = load_existing(p)
+        return
     if len(records) < len(existing):
         raise ValueError(
             f"拒绝写盘：合并后 {len(records)} 条 < 原有 {len(existing)} 条"
             f"（防静默缩水）。确认要覆盖请显式调用 save(..., existing=[])")
-    p.write_text(json.dumps(records, ensure_ascii=False, indent=2),
-                 encoding="utf-8")
+
+
+def _atomic_write(path, records: list[dict]) -> None:
+    """写 JSON：先落同目录临时文件再原子替换，读者永远看不到半个文件。
+
+    🔴 直接 `write_text` 有真实的半截风险：台账约 1 MB，写到一半被 Ctrl-C /
+       进程被杀，留下的就是一个**语法不完整的 JSON** ⇒ 下次 `load_existing()`
+       返回 `[]` ⇒ 合并退化成"只有本次" ⇒ 静默丢台账。
+       这不是理论风险 —— `merge_fragments` 整个函数就是为"从碎片重建"而写的。
+    `.tmp` 后缀落在 `.gitignore` 的 `*.tmp*` 家族里，不会漏进仓库。
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(records, ensure_ascii=False, indent=2),
+                   encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def save(path, records: list[dict], *, existing: list[dict] = None) -> Path:
+    """写台账到**显式路径**，带防静默缩水护栏。返回实际落盘路径。
+
+    走台账目录请用 `save_snapshot()` —— 这个函数只写你给的那个文件，
+    **不落快照**。它存在是为了 `--out keys.json` 这类"我就想导一份到别处"的用法，
+    以及 `prune_ledger` 那种"先写 tmp 再自己替换"的场景。
+    """
+    p = Path(path)
+    if existing is None:
+        existing = load_existing(p)
+    _guard_no_shrink(records, existing)
+    _atomic_write(p, records)
+    return p
+
+
+def save_snapshot(merged: list[dict], batch: list[dict] = None, *,
+                  existing: list[dict] = None, when=None) -> tuple:
+    """正式落盘：**全量快照** + **本批结果**。返回 `(快照路径, 本批路径)`。
+
+    `快照路径` 同时就是**新的读源** —— 落盘之后 `ledger_path()` 会指向它。
+
+    三个动作，顺序不能换：
+
+      1. 护栏 —— `merged` 条数 < `existing` 就抛 `ValueError`（**先于任何写入**）；
+      2. 写快照 `ledger/runs/<日期>/results-<时间戳>.json`，
+         内容是 `merged`（**合并后的全量台账**）；
+      3. 原子刷新 `ledger/latest.json`，内容是 `batch`（**本批**，不传则同 `merged`）。
+
+    🔴 快照必须是**全量**。只存本批的话，下一次 `ledger_path()` 读到的最新快照
+       就只有本批那几条 ⇒ 合并等于没做 ⇒ 台账被切碎 ⇒ `run.py --count 1`
+       又变回 1 条。这正是"`latest.json` 不能当读源"的原因。
+       护栏也只对快照有意义：`batch` 天然是子集，拿它比 `existing` 必然误报。
+
+    🔴 先写快照、再刷本批。万一第 3 步挂了，读源仍是**上一份完整台账**，
+       而新快照已经躺在 `runs/` 里可以人工捞回；反过来会变成
+       "读源已更新、快照没留下"，这次落盘就没有回滚点了。
+
+    `existing=None` 时以**当前读源**（`ledger_path()`）为准。
+
+    ⚠ `merged` 必须是**合并后**的列表、`batch` 是**本批原始**结果。这里不做合并
+      —— 合并规则只有 `merge_records` / `merge_fragments` 两处实现。
+    """
+    if existing is None:
+        existing = load_existing(ledger_path())
+    _guard_no_shrink(merged, existing)
+    snap = snapshot_path(when)
+    _atomic_write(snap, merged)
+    last = last_run_path()
+    _atomic_write(last, merged if batch is None else batch)
+    return snap, last

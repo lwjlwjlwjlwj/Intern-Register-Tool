@@ -1,8 +1,8 @@
-"""从各个散落来源**重建** `results.json`（账号台账）。
+"""从各个散落来源**重建**账号台账（`ledger/`，读源 = 最新那份全量快照）。
 
 为什么需要它
 ------------
-`results.json` 是**账号台账**，但它同时也是 `run.py --out` 的默认目标，
+台账是**账号台账**，而它曾经就是 `run.py --out` 的默认目标，
 所以很容易被一次小规模运行覆盖掉。本项目已经栽过**两次**：
 
   1. `_backups/` 整个目录被清理 → 38 个账号的记录只剩导出 CSV 里有一份
@@ -18,7 +18,7 @@
 
 | 顺序 | 来源 | 通常有哪些字段 |
 |------|------|----------------|
-| 1 | `results.json` | 最全（含 `jwt` / `sso_uid` / `stages`） |
+| 1 | `ledger/runs/<日期>/results-<时间戳>.json`（台账读源 = 最新快照） | 最全（含 `jwt` / `sso_uid` / `stages`） |
 | 2 | `--from` 指定的任意 json/csv | 看情况 |
 | 3 | `.workbuddy-ai/exports/keys_export.{json,csv}` | email/username/password/api_key/key_id/credits/verify/source |
 | 4 | `.workbuddy-ai/tmp/*.json` | 历次实验的中间产物，可能带 `jwt` |
@@ -35,7 +35,7 @@
 用法
 ----
     python tools/data/restore_results.py                    # 干跑，只报告
-    python tools/data/restore_results.py --write            # 真写回 results.json
+    python tools/data/restore_results.py --write            # 真写回台账（落 ledger/ + 快照）
     python tools/data/restore_results.py --write --out x.json
     python tools/data/restore_results.py --from a.json --from b.csv --write
 """
@@ -48,10 +48,11 @@ from pathlib import Path
 
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
+from src import ledger  # noqa: E402
 from src.ledger import merge_fragments  # noqa: E402
 
 WORK = ROOT / ".workbuddy-ai"
-DEFAULT_OUT = ROOT / "results.json"
+DEFAULT_OUT = ledger.ledger_path()
 
 
 def is_account(rec: dict) -> bool:
@@ -118,7 +119,7 @@ def collect(extra: list[str]) -> tuple[list[dict], dict[str, int]]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="从散落来源重建 results.json")
+    ap = argparse.ArgumentParser(description="从散落来源重建账号台账")
     ap.add_argument("--from", dest="extra", action="append", default=[],
                     help="额外来源（可多次）；目录则展开其中的 json/csv")
     ap.add_argument("--out", default=str(DEFAULT_OUT))
@@ -191,9 +192,17 @@ def main() -> int:
             print(f"✗ 重建后 {len(out_recs)} 条 < 现有 {old} 条，拒绝写盘",
                   file=sys.stderr)
             return 2
-    out.write_text(json.dumps(out_recs, ensure_ascii=False, indent=2),
-                   encoding="utf-8")
-    print(f"\n✓ 已写回 {out}（{len(out_recs)} 条）")
+    if ledger.is_ledger_path(out):
+        # 目标在台账目录里 ⇒ 走台账目录：重建结果留一份日期/时间戳快照
+        # （随即成为**新读源**），并把全量刷进 `latest.json`。
+        # 走 `ledger.save_snapshot` 而不是自己 write_text：序列化格式与
+        # 原子写（tmp + 替换）都只有一处实现，别在这里分叉。
+        snap, last = ledger.save_snapshot(out_recs, existing=[])
+        print(f"\n✓ 已写回 {snap}（{len(out_recs)} 条）")
+        print(f"   本批结果：{last}")
+    else:
+        ledger.save(out, out_recs, existing=[])
+        print(f"\n✓ 已写回 {out}（{len(out_recs)} 条）")
     return 0
 
 

@@ -22,7 +22,8 @@
 文件末尾两条"整本台账过一遍"的回归用 `any_ledger` 夹具，它**同时**跑两个来源：
 
   * `ledger_sample` —— 仓库内的脱敏样本，形状复刻真实台账，CI 上靠它跑；
-  * `real_ledger`  —— 本地真实 `results.json`，CI 上不存在 ⇒ 显式跳过。
+  * `real_ledger`  —— 本地真实台账（读源 = `runs/` 里最新的全量快照），
+    CI 上不存在 ⇒ 显式跳过。
 
 🔴 2026-09-19 这两条曾经各自 `load_existing(results.json)` 直接读真实台账，
    而那个文件含凭据、被 `.gitignore` 排除 ⇒ CI 上拿到 `[]` ⇒ 断言 `assert real`

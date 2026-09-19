@@ -7,7 +7,8 @@ IP 维度累计配额）。这意味着**注册之后的每一段都测不了**�
 毫无关系（登录走 SSO、建 Key 走 discovery、推理走 discovery-api，三个
 不同主机）。
 
-这个工具从 `results.json` 里取**已经注册成功**的账号，只跑下游：
+这个工具从台账（`ledger/runs/<日期>/results-<时间戳>.json`，读源 = 最新那份
+全量快照）里取**已经注册成功**的账号，只跑下游：
 
     Stage 3  登录（Playwright，取 JWT + 浏览器 Cookie）
     Stage 4  查额度（纯只读：getUserInfo / free-grant-status / balance / list_keys）
@@ -18,9 +19,10 @@ IP 维度累计配额）。这意味着**注册之后的每一段都测不了**�
 
 为什么要复用 `src/ledger.py` 而不是自己写 `--out`
 -------------------------------------------------
-`results.json` 同时是"运行报告"和"账号台账"。本项目已经因为"直接覆盖"
-丢过一次台账（53 条 → 1 条）。所以这里的写盘走 `ledger.save()`：
-按 email 合并、失败不盖成功、条数不得变少的护栏。**任何会写台账的工具
+台账同时是"运行报告"和"账号台账"。本项目已经因为"直接覆盖"
+丢过一次台账（53 条 → 1 条）。所以这里的写盘走 `ledger.save()`，
+目标在台账目录里时走 `ledger.save_snapshot()`（留一份日期/时间戳快照，
+它随即成为新读源）：按 email 合并、失败不盖成功、条数不得变少的护栏。**任何会写台账的工具
 都必须复用同一个合并实现**，不能各写各的。
 
 🔴 三个必须小心的点
@@ -53,8 +55,18 @@ from pathlib import Path
 
 from _bootstrap import ROOT  # noqa: F401  （副作用：把仓库根加进 sys.path）
 
-DEFAULT_IN = ROOT / "results.json"
-DEFAULT_OUT = ROOT / "results.json"
+from src import ledger  # noqa: E402  （必须在 _bootstrap 之后：它才把仓库根加进 sys.path）
+
+# 台账**读源** = `runs/` 里最新的全量快照。注意它是**每次落盘都换名字**的，
+# 不是常量路径 —— `ledger.ledger_path()` 现扫目录算出来。
+# 写盘默认也回到这里，但**经过 `save_snapshot()`**：每次落盘留一份新的
+# `ledger/runs/<日期>/results-<时间戳>.json`，它随即成为新读源。
+#
+# ⚠ 模块级取值会**冻住 import 时刻**那份快照。这里无害：写盘走
+#   `is_ledger_path()` 判"在不在台账目录"，与具体是哪一个文件无关。
+#   真要"当下的读源"就现调 `ledger.ledger_path()`，别读这两个常量。
+DEFAULT_IN = ledger.ledger_path()
+DEFAULT_OUT = ledger.ledger_path()
 
 
 # ────────────────────────────────────────────────────────────────
@@ -288,7 +300,11 @@ def main() -> int:
                     help="无头浏览器（**默认**，不弹窗口）")
     ap.add_argument("--headful", dest="headless", action="store_false",
                     help="有头浏览器（弹窗口；只在要肉眼看流程时用）")
-    ap.add_argument("--out", default=str(DEFAULT_OUT), help="台账输出")
+    ap.add_argument("--out", default=str(DEFAULT_OUT),
+                    help="台账输出。默认 = 台账读源，此时落"
+                         "ledger/runs/<日期>/results-<时间戳>.json 快照（随即成为新读源）"
+                         "+ 刷 ledger/latest.json（本批结果）；"
+                         "给别的路径则只写那个文件")
     ap.add_argument("--no-write", action="store_true", help="不写台账，只打印")
     args = ap.parse_args()
 
@@ -424,12 +440,23 @@ def main() -> int:
     print(f"\n结果合并：原有 {kept} 条 + 本次新增 {added} 条"
           + (f"（{upgraded} 条已更新：升级或补全字段）" if upgraded else "")
           + f" = {len(merged)} 条")
+    # 🔴 2026-09-20 修：`--out` 原来是**解析了但没人用**的（写盘写死在
+    #    `src_path`）。参数被忽略是最难发现的一类缺陷 —— help 里承诺了、
+    #    实际不生效，而使用者只会觉得"我明明指定了路径"。
+    dest = Path(args.out)
     try:
-        ledger.save(src_path, merged)
+        if ledger.is_ledger_path(dest):
+            # 目标在台账目录里 ⇒ 走台账目录：留一份日期/时间戳快照（它随即成为
+            # **新读源**），并把本次结果刷进 `latest.json`。
+            snap, last = ledger.save_snapshot(merged)
+            written = snap
+            print(f"台账已更新：\n  快照（读源） {snap}\n  本批结果     {last}")
+        else:
+            written = ledger.save(dest, merged)
+            print(f"台账已更新 {written}")
     except ValueError as ex:
         print(f"✗ {ex}", file=sys.stderr)
         return 3
-    print(f"台账已更新 {src_path}")
     return 0
 
 
