@@ -44,8 +44,11 @@ python run.py
 # 4. 批量 6 个（默认 2 路浏览器并发，注册阶段自动流水线重叠）
 python run.py --count 6 --workers 2 --out keys.json
 
-# 5. 无头模式（不弹窗口，实测可用）
-python run.py --count 6 --headless
+# 5. 无头模式（不弹窗口）—— **已是默认**，无需加参数
+python run.py --count 6
+
+#    要弹窗口肉眼看流程时才用：
+python run.py --count 6 --headful
 
 # 6. 保存过程截图（排查用）
 python run.py --shot debug
@@ -56,7 +59,7 @@ python tools/ops/gen_mihomo_slots.py --sub <订阅名> --slots 6 --filter 美国
 python tools/ops/proxypool_ctl.py start  # 起独立 mihomo 实例（status/stop 同源）
 python tools/probes/probe_slots.py          # 先量出真实出口 IP 个数 = 并发上限
 echo 'IR_PROXY_SLOTS_FILE=.workbuddy-ai/proxypool/slots.txt' >> .env
-python run.py --count 4 --workers 2 --headless
+python run.py --count 4 --workers 2          # 默认无头；要弹窗口加 --headful
 python tools/ops/proxypool_ctl.py stop   # 用完停掉
 
 # 8. 改代码前后（质量门）
@@ -535,7 +538,7 @@ python tools/probes/probe_proxy.py --file proxies.txt        # 每行一条
 **接进流水线**：
 
 ```bash
-IR_PROXY=host:port:user:pass python run.py --count 5 --headless
+IR_PROXY=host:port:user:pass python run.py --count 5
 ```
 
 | 变量 | 作用 |
@@ -2068,9 +2071,25 @@ WEB#<machineId>-h-<毫秒时间戳>-<随机数>#<签名>
 （**版本号原样保留**，取 `browser.version` 首段拼 `Chrome/152.0.0.0`）。
 这不是伪造指纹，而是去掉一个自动化工具留下的无意义自我标记。
 
+### 2026-09-20 起：**默认就是无头**
+
 ```bash
-python run.py --headless        # 无头跑，不弹窗口
+python run.py                 # 默认无头，不弹窗口
+python run.py --headful       # 要弹窗口时显式指定
 ```
+
+翻默认值的理由：当天实测**漏写 `--headless` 跑了一整批有头**。
+根因不是代码 bug，而是**默认值本身是有头** —— 忘了写就弹窗口，而且不报错。
+默认翻过来之后，忘了写也不会误弹窗口。
+
+> ⚠ `--headless` 参数**保留**（现在是幂等的 no-op），因为旧脚本与文档里到处是它；
+> 删掉会让那些命令直接报错。
+>
+> ⚠ 别再宣称"无头更快"：2026-09-20 在 `workers=4` 量级上实测，
+> **无头与有头的吞吐没有可测差异**（两次无头 50 批次关键路径 194.2s / 196.5s；
+> 有头 100 批次 370.6s = 3.7s/账号 —— 但 50 与 100 不可直接比，
+> 50 = 4×12+2 有 worker 空转的尾巴）。
+> 无头的真正好处是**不弹窗口**，不是速度。
 
 ## 已知限制
 

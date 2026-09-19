@@ -12,7 +12,7 @@ from .state import LoginResult
 # ────────────────────────────────────────────────────────────────
 # 单账号入口（自带浏览器生命周期）
 # ────────────────────────────────────────────────────────────────
-def login(account: str, password: str, *, headless: bool = False,
+def login(account: str, password: str, *, headless: bool = True,
           timeout: int = 150, attempts: int = 3, cooldown: float = 15.0,
           screenshot_prefix: str = None, verbose: bool = False,
           chrome_args=None) -> LoginResult:
@@ -23,7 +23,8 @@ def login(account: str, password: str, *, headless: bool = False,
     Args:
         account: 邮箱 / 手机号 / 用户名
         password: 明文密码
-        headless: 无头模式。**实测可用**（3/3 通过，见文件头说明）
+        headless: 无头模式。**默认 True**（实测可用，3/3 通过，见文件头说明）。
+            ⚠ 2026-09-20 起默认无头：要弹窗口排查请显式传 `headless=False`。
         timeout: 单次尝试里验证码阶段的等待上限（秒）
         attempts: 失败后换新会话重试的次数
         cooldown: 两次尝试之间的冷却基数（秒），按次数线性递增

@@ -574,7 +574,7 @@ def stage_register(mail: TempMailClient, sso: SSOClient, rec: AccountRecord,
 # ────────────────────────────────────────────────────────────────
 # Stage 3+4+5：登录 → 领额度 → 建 Key → 校验
 # ────────────────────────────────────────────────────────────────
-def stage_login_key(rec: AccountRecord, *, session=None, headless: bool = False,
+def stage_login_key(rec: AccountRecord, *, session=None, headless: bool = True,
                     key_name: str = "default", verbose: bool = True,
                     screenshot_prefix: str = None, log=print,
                     verify: bool = True) -> bool:
@@ -706,7 +706,7 @@ def verify_keys(records: list, *, verbose: bool = True, log=print) -> None:
 # ────────────────────────────────────────────────────────────────
 # 单账号
 # ────────────────────────────────────────────────────────────────
-def run_one(*, headless: bool = False, key_name: str = "default",
+def run_one(*, headless: bool = True, key_name: str = "default",
             mail_domain: str = None, verbose: bool = True,
             screenshot_prefix: str = None) -> AccountRecord:
     """完整跑通一个账号（顺序执行，便于调试）。"""
@@ -732,7 +732,7 @@ def run_one(*, headless: bool = False, key_name: str = "default",
 # ────────────────────────────────────────────────────────────────
 # 批量：两段式流水线
 # ────────────────────────────────────────────────────────────────
-def run_batch(*, count: int, workers: int = 2, headless: bool = False,
+def run_batch(*, count: int, workers: int = 2, headless: bool = True,
               key_name: str = "default", mail_domain: str = None,
               verbose: bool = True, screenshot_prefix: str = None,
               reg_concurrency: int = None,

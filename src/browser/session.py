@@ -96,7 +96,7 @@ class BrowserSession:
     理由见 `_launch_kwargs()` —— **探针要注入启动参数请用它，别改全局**。
     """
 
-    def __init__(self, headless: bool = False, chrome_args=None):
+    def __init__(self, headless: bool = True, chrome_args=None):
         self.headless = headless
         self.chrome_args = chrome_args
         self._pw = None

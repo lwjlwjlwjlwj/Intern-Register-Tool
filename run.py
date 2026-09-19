@@ -5,8 +5,17 @@
   python run.py --count 6                # 跑 6 个（默认 4 路浏览器并发）
   python run.py --count 6 --workers 1    # 强制顺序执行（最保守）
   python run.py --count 6 --workers 6    # 6 路并发（实测安全，见下）
-  python run.py --headless --count 6     # 无头 + 并发
+  python run.py --headful --count 6      # 有头（弹窗口），只在要肉眼看流程时用
   python run.py --out keys.json          # 结果落盘
+
+关于 --headless：
+  **默认就是无头**（不弹窗口）。要弹窗口用 `--headful`。
+  `--headless` 仍然接受，是为了让旧脚本/文档里的写法继续有效，不是必需的。
+
+  ⚠ 别再宣称"无头更快" —— 2026-09-20 实测在 workers=4 量级上
+  **无头与有头的吞吐没有可测差异**（两次无头 50 批次关键路径 194.2s / 196.5s，
+  有头 100 批次 370.6s = 3.7s/账号；但 50 与 100 不可直接比，因为 50 有
+  worker 空转的尾巴）。无头的真正好处是**不弹窗口**，不是速度。
 
 关于 --workers：
   浏览器侧的并发数。注册阶段（纯 HTTP）由生产者池并发跑在前面，
@@ -59,8 +68,10 @@ def main():
                     help="浏览器并发数（实测 6 路零失败，默认 4）")
     ap.add_argument("--key-name", default="default", help="API Key 名称")
     ap.add_argument("--mail-domain", default=None, help="临时邮箱域名（默认取 IR_WORKER_DOMAIN）")
-    ap.add_argument("--headless", action="store_true",
-                    help="无头模式（实测可用，比 headful 快；不弹窗口）")
+    ap.add_argument("--headless", action="store_true", default=True,
+                    help="无头模式（**默认**，不弹窗口）")
+    ap.add_argument("--headful", dest="headless", action="store_false",
+                    help="有头模式（弹窗口；只在需要肉眼看流程时用）")
     ap.add_argument("--out", default="results.json", help="结果输出文件")
     ap.add_argument("--overwrite", action="store_true",
                     help="只写本次结果、不合并历史（默认按 email 合并，"

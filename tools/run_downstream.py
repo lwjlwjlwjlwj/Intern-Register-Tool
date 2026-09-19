@@ -284,7 +284,10 @@ def main() -> int:
                     help="其中前 N 个**真建新 key**（验证建 Key 路径）。"
                          "0=全部只做幂等复用（默认，不污染 key 列表）")
     ap.add_argument("--key-name", default="default", help="复用/新建的 key 名")
-    ap.add_argument("--headless", action="store_true", help="无头浏览器")
+    ap.add_argument("--headless", action="store_true", default=True,
+                    help="无头浏览器（**默认**，不弹窗口）")
+    ap.add_argument("--headful", dest="headless", action="store_false",
+                    help="有头浏览器（弹窗口；只在要肉眼看流程时用）")
     ap.add_argument("--out", default=str(DEFAULT_OUT), help="台账输出")
     ap.add_argument("--no-write", action="store_true", help="不写台账，只打印")
     args = ap.parse_args()

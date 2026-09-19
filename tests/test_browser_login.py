@@ -28,15 +28,20 @@
 """
 
 import dataclasses
+import inspect
 import time
+from pathlib import Path
 
 import pytest
 
+import src.browser.entry as browser_entry
 import src.browser.session as browser_session
 from src.browser import CHROME_ARGS, LoginResult, build_login_url
 from src.browser.attempt import _build_result
 from src.browser.session import BrowserSession, _launch_kwargs, _retry_loop
 from src.browser.state import _AttemptState
+
+_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
@@ -412,6 +417,53 @@ def test_session_keeps_injected_chrome_args():
 
 def test_session_defaults_to_none_meaning_module_constant():
     assert BrowserSession().chrome_args is None
+
+
+# ────────────────────────────────────────────────────────────────
+# [5] 默认无头（2026-09-20 起）
+# ────────────────────────────────────────────────────────────────
+# 背景：2026-09-20 实测**漏写 `--headless` 跑了一整批有头**。
+# 根因不是代码 bug，而是**默认值本身是有头** —— 忘了写就弹窗口，而且不报错。
+#
+# 所以把默认翻过来：不写就是无头，要弹窗口必须显式 `--headful`。
+# 这一组钉住"翻过来了"。**翻回去不会有任何报错**，只会让某次跑批
+# 悄悄变成有头（无人值守场景下还会干扰桌面），所以必须有用例守着。
+
+def test_login_defaults_to_headless():
+    assert inspect.signature(browser_entry.login).parameters["headless"].default is True
+
+
+def test_browser_session_defaults_to_headless():
+    assert BrowserSession().headless is True
+
+
+def test_pipeline_defaults_to_headless():
+    """三个对外入口的默认值都得翻过来，只翻一个等于没翻。"""
+    from src import pipeline
+
+    for fn in (pipeline.stage_login_key, pipeline.run_one, pipeline.run_batch):
+        default = inspect.signature(fn).parameters["headless"].default
+        assert default is True, f"{fn.__name__} 的 headless 默认值还是 {default!r}"
+
+
+CLIS = [_ROOT / "run.py", _ROOT / "tools" / "run_downstream.py"]
+
+
+@pytest.mark.parametrize("cli", CLIS, ids=lambda p: p.name)
+def test_cli_defaults_to_headless_with_headful_optout(cli):
+    """两个 CLI 都要：默认无头 + 提供 `--headful` 退出通道。
+
+    ⚠ 保留 `--headless`（`default=True`）是**刻意的**：
+      旧脚本与文档里到处是 `--headless`，删掉它会让那些命令直接报错。
+      它现在是幂等的 no-op，不是必需的。
+    """
+    src = cli.read_text(encoding="utf-8")
+    assert 'ap.add_argument("--headless", action="store_true", default=True' in src, (
+        f"{cli.name}: --headless 没有翻成默认 True"
+    )
+    assert 'ap.add_argument("--headful", dest="headless", action="store_false"' in src, (
+        f"{cli.name}: 没有 --headful 退出通道 —— 想弹窗口就没法了"
+    )
 
 
 def test_default_chrome_args_come_from_the_reader_module(monkeypatch):
