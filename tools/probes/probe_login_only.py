@@ -21,9 +21,16 @@
   混进配置对比里。宁可换账号引入账号间差异，也不要引入顺序偏差
   —— 顺序偏差是**系统性**的，会稳定地把后测的配置显得更快。
 
+🔴 账号来源是**某次导出的 CSV 快照**，不是台账 —— 快照会过期。
+  因此带一道"文件级防静默缩水"护栏：拿台账比对，快照覆盖不全就告警。
+  没有它时，快照停在几天前会让你看到"6/6 登录成功"，却看不出那 6 个号
+  来自一个很小的旧样本（2026-09-20 实测：快照 53 行、全是 5 天前的账号，
+  而台账已有 417 个）。
+
 用法：
     python tools/probes/probe_login_only.py --workers 2 --count 6 --offset 0
     python tools/probes/probe_login_only.py --workers 3 --count 6 --offset 6
+    python tools/probes/probe_login_only.py --csv <自己导出的清单> --count 10
 """
 
 import argparse
@@ -38,14 +45,33 @@ from pathlib import Path
 
 from _path import ROOT  # noqa: F401  （副作用：把 tools/ 与仓库根加进 sys.path）
 
+from src import ledger  # noqa: E402  （必须在 _path 之后：它才把仓库根加进 sys.path）
+
 DEFAULT_CSV = ROOT / ".workbuddy-ai" / "exports" / "keys_export.csv"
+DEFAULT_LEDGER = ROOT / "results.json"
 
 
-def load_accounts(csv_path: Path, offset: int, count: int) -> list[tuple]:
+def read_rows(csv_path: Path) -> list[dict]:
+    """读 CSV 里**账号齐全**的行（有 `email` 与 `password`），按 `created_at` 升序。
+
+    排序是刻意的：`--offset/--count` 的语义是"从最早的第 N 个开始取"，
+    没有稳定排序的话 `--offset` 在不同次运行会取到不同账号。
+    """
     with csv_path.open(encoding="utf-8-sig") as f:
         rows = [r for r in csv.DictReader(f) if r.get("email") and r.get("password")]
     rows.sort(key=lambda r: r.get("created_at") or "")
-    return [(r["email"], r["password"]) for r in rows[offset:offset + count]]
+    return rows
+
+
+def load_accounts(csv_path: Path, offset: int, count: int) -> tuple:
+    """返回 `(取到的账号, 快照里的全部账号行)`。
+
+    一并返回全量行是为了让调用方能拿它做**覆盖比对**（快照是否落后于台账），
+    否则得把同一个文件再读一遍。
+    """
+    rows = read_rows(csv_path)
+    accts = [(r["email"], r["password"]) for r in rows[offset:offset + count]]
+    return accts, rows
 
 
 def probe_discovery(jwt: str, cookies: dict) -> dict:
@@ -93,12 +119,29 @@ def main() -> int:
     ap.add_argument("--headless", action="store_true", default=True)
     ap.add_argument("--headful", dest="headless", action="store_false")
     ap.add_argument("--csv", default=str(DEFAULT_CSV), help="账号来源 CSV")
+    ap.add_argument("--ledger", default=str(DEFAULT_LEDGER),
+                    help="权威台账（只用来检查账号池是否过期，不参与测试）")
     ap.add_argument("--with-discovery", action="store_true",
                     help="登录后跑一遍**只读**的 Stage 4（用户信息/额度/余额/key 列表）")
     ap.add_argument("--out", default=None, help="结果 JSON 落盘路径")
     args = ap.parse_args()
 
-    accts = load_accounts(Path(args.csv), args.offset, args.count)
+    accts, snapshot_rows = load_accounts(Path(args.csv), args.offset, args.count)
+
+    # ── 文件级防静默缩水：账号池可能整体过期 ────────────────────────
+    # 与 `check_keys_alive.py` 同一道护栏，只是比的是 email 不是 api_key。
+    # 危险之处：探针会报"6/6 登录成功"，你**完全看不出**那 6 个号是从一个
+    # 5 天前的 53 行快照里取的，而台账里已经有 417 个账号 ——
+    # 登录本身没问题，但**结论的适用范围**被静默限死了。
+    ledger_n, csv_n, missing = ledger.account_coverage(
+        ledger.load_existing(args.ledger), {r["email"] for r in snapshot_rows})
+    if missing:
+        print(f"⚠ 账号来源快照**落后于台账**：台账 {ledger_n} 个账号 / 快照 {csv_n} 个，"
+              f"本次只从快照取号，**够不到**台账里多出的 {len(missing)} 个。")
+        print(f"    快照：{args.csv}")
+        print(f"    台账：{args.ledger}")
+        print("    ⇒ 结论只对快照里那批账号成立，别当成'全量账号都能登录'。")
+
     if not accts:
         print(f"✗ 从 {args.csv} 取不到账号（offset={args.offset} count={args.count}）")
         return 1

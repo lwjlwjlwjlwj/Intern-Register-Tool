@@ -1,24 +1,35 @@
-"""`src/ledger.key_coverage` —— 「导出快照 vs 权威台账」的覆盖统计。离线，零网络。
+"""`src/ledger` 的两道「导出快照 vs 权威台账」覆盖护栏。离线，零网络。
+
+覆盖两个**兄弟**判据，触发场景不同：
+
+| 判据 | 管什么 | 谁在用 |
+|---|---|---|
+| `key_coverage` | 我**核验了多少把 key** | `tools/ops/check_keys_alive.py` |
+| `account_coverage` | 我**能从哪个池子里取账号** | `tools/probes/probe_login_only.py` |
 
 为什么值得单独钉住
 ------------------
-`tools/ops/check_keys_alive.py` 的默认输入是**某次导出的 CSV 快照**，
-它只报"存活 N/N"。N 是**快照自己的**分母 —— 快照整体过期时，
-这个数字看着全绿，实则完全没覆盖当时那一批。
+两个工具的默认输入都是**某次导出的 CSV 快照**，而它们只报自己的分母：
+`check_keys_alive` 报"存活 N/N"、`probe_login_only` 报"6/6 登录成功"。
+快照整体过期时，这些数字**看着全绿**，实则完全没覆盖台账。
 
-2026-09-20 实测踩到：快照停在 3 天前、只有 53 把，而台账里已有 407 把，
-跑出 **"53/53 存活"** 这种"没测到却像全绿"的结论。
+2026-09-20 实测踩到两处：
+  * 快照停在 3 天前、只有 53 把 key，而台账已有 407 把 ⇒ **"53/53 存活"**；
+  * 快照全是 5 天前的账号，而台账已有 417 个 ⇒ **"6/6 登录成功"**。
 
 这不是新问题，是**同一个文件里已有护栏的高一层版本**：
 `check_keys_alive.py` 早就对"行级静默缩水"（过滤掉非 `sk-` 行）做了报数，
 但**文件级缩水没人管** —— 而行级缩水至少分母变了，文件级缩水连分母本身都是错的。
 
+`account_coverage` 那一侧更隐蔽：探针的结论**本身没错**（那 6 个号确实能登录），
+错的是**结论的适用范围**被静默限死在一个很小的旧样本上。
+
 覆盖方向是**单向**的
 --------------------
-`missing` 只表达「台账有、清单没有」。反方向（清单有而台账没有）本函数不判 ——
+`missing` 只表达「台账有、清单没有」。反方向（清单有而台账没有）两个函数都不判 ——
 `test_direction_is_one_way` 专门把这个契约钉住，防止后来者把"missing 为空"
-误读成"两边一致"。测试链不含 `tools/`，所以这里**不 import 那个工具**：
-纯判据在 `src/ledger.py`，本文件只测它。
+误读成"两边一致"。测试链不含 `tools/`，所以这里**不 import 那些工具**：
+纯判据在 `src/ledger.py`，本文件测它 + 用静态检查确认接线还在。
 """
 
 from pathlib import Path
@@ -144,26 +155,94 @@ def test_returns_plain_set_not_falsy_sentinel():
     assert "sk-b" not in missing
 
 
-# ── 接线：护栏真的被工具调用了 ──────────────────────────────────────
+# ── account_coverage：同一道护栏的另一个字段 ────────────────────────
 
-TOOL = _ROOT / "tools" / "ops" / "check_keys_alive.py"
+def test_account_coverage_counts_emails(any_ledger):
+    """清单 == 台账的 email 全集 ⇒ 没有遗漏。"""
+    emails = {r["email"] for r in any_ledger if r.get("email")}
+    ledger_n, known_n, missing = ledger.account_coverage(any_ledger, emails)
+    assert missing == set(), f"清单已含全部 email，却报出遗漏 {len(missing)} 个"
+    assert ledger_n == known_n
 
 
-def test_tool_actually_wires_the_guard():
-    """静态接线检查：纯函数测绿 **≠** 工具真的调了它。
+def test_account_coverage_detects_stale_pool(any_ledger):
+    """🔴 真实场景：账号池来自一个**很小的旧快照**。
 
-    只能做静态检查 —— 跑那个工具要发真实网络请求，不适合放进测试链。
-
-    ⚠ 它证明的是"接线还在"，**不是**"告警文案对"：
-      把这段删掉会红；把文案改丑**不会**红。
-      这是本用例的已知盲区，别把它读成"告警一定会在正确的时机打印"。
+    这是 `probe_login_only.py` 的失效形态 —— 探针会报"6/6 登录成功"，
+    而那 6 个号是从快照里取的，够不到台账里新注册的账号。
+    结论本身没错，错的是**适用范围**被静默限死。
     """
-    src = TOOL.read_text(encoding="utf-8")
-    assert "ledger.key_coverage(" in src, "工具没调用 key_coverage —— 文件级护栏被摘了"
-    assert "ledger.load_existing(" in src, "工具没读台账 —— 覆盖比对失去参照物"
-    assert "KEY_PREFIX = ledger.KEY_PREFIX" in src, (
-        "前缀没共用同一处定义：行级过滤与覆盖统计会各认一套口径，互相掩盖"
-    )
+    emails = [r["email"] for r in any_ledger if r.get("email")]
+    if len(emails) < 4:
+        pytest.skip("台账里带 email 的记录太少，构不出'池子落后'的场景")
+
+    ledger_n, known_n, missing = ledger.account_coverage(any_ledger, set(emails[:3]))
+    assert known_n == 3
+    assert len(missing) == ledger_n - 3
+    assert missing, "池子远小于台账，却没有报出任何遗漏 —— 护栏失效"
+
+
+def test_account_coverage_is_independent_of_key_coverage(any_ledger):
+    """两个判据**各看各的字段**，不互相顶替。
+
+    台账里存在"有 email 但没有 api_key"的记录（失败/跳过的账号），
+    也存在"有 api_key 但 email 为空"的历史记录。
+    ⇒ 两者的计数**本来就不该相等**，谁也不能拿另一个的数当自己的。
+    """
+    key_n = ledger.key_coverage(any_ledger, set())[0]
+    acct_n = ledger.account_coverage(any_ledger, set())[0]
+    assert key_n > 0 and acct_n > 0
+    # 不假设大小关系（两种记录都可能存在），只断言它们**是独立算出来的**：
+    # 换一个字段就不该得到同一个数，除非台账恰好两者齐全且一一对应。
+    keys = {r["api_key"] for r in any_ledger if r.get("api_key")}
+    emails = {r["email"] for r in any_ledger if r.get("email")}
+    if len(keys) != len(emails):
+        assert key_n != acct_n, "两个字段数量不同却算出同一个数 —— 可能算串了字段"
+
+
+def test_account_coverage_ignores_empty_emails():
+    """空 email 不计入 —— 台账里有"无 email 的配额拦截记录"这类行。"""
+    records = [
+        {"email": "", "api_key": "sk-a"},
+        {"email": None},
+        {"note": "没有 email 字段"},
+        {"email": "real@x"},
+    ]
+    ledger_n, known_n, _ = ledger.account_coverage(records, {"real@x", "", None})
+    assert ledger_n == 1, f"只有 1 个真 email，却数成 {ledger_n}"
+    assert known_n == 1, f"清单侧空值没被丢掉，known_n={known_n}"
+
+
+def test_account_coverage_empty_inputs():
+    assert ledger.account_coverage([], set()) == (0, 0, set())
+
+
+# ── 接线：护栏真的被工具调用了 ──────────────────────────────────────
+#
+# ⚠ 只能做静态检查 —— 跑这两个工具都要发真实网络请求，不适合放进测试链。
+#   它证明的是"接线还在"，**不是**"告警文案对"：把护栏删掉会红，
+#   把文案改丑**不会**红。这是已知盲区，别读成"告警一定在正确时机打印"。
+
+TOOLS = {
+    "check_keys_alive": (_ROOT / "tools" / "ops" / "check_keys_alive.py",
+                         "ledger.key_coverage(", "key_coverage"),
+    "probe_login_only": (_ROOT / "tools" / "probes" / "probe_login_only.py",
+                         "ledger.account_coverage(", "account_coverage"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(TOOLS))
+def test_tool_actually_wires_the_guard(name):
+    path, call, fn_name = TOOLS[name]
+    src = path.read_text(encoding="utf-8")
+    assert call in src, f"{name} 没调用 {fn_name} —— 文件级护栏被摘了"
+    assert "ledger.load_existing(" in src, f"{name} 没读台账 —— 覆盖比对失去参照物"
     # 光"算了覆盖"不够 —— 得**真的告警**。少了这一条，把整个 `if missing:`
     # 告警块删掉（保留计算）本用例仍会绿，而那正是护栏失效的主路径。
-    assert "if missing:" in src, "算了覆盖却没有告警分支 —— 护栏等于没接"
+    assert "if missing:" in src, f"{name} 算了覆盖却没有告警分支 —— 护栏等于没接"
+
+
+def test_check_keys_alive_shares_the_prefix_constant():
+    """前缀只定义一次：行级过滤与覆盖统计各认一套口径会互相掩盖。"""
+    src = TOOLS["check_keys_alive"][0].read_text(encoding="utf-8")
+    assert "KEY_PREFIX = ledger.KEY_PREFIX" in src

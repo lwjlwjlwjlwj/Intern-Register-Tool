@@ -57,6 +57,17 @@ def load_existing(path) -> list[dict]:
 KEY_PREFIX = "sk-"
 
 
+def _coverage_of(ledger_side, known_side) -> tuple:
+    """`(台账侧去重计数, 清单侧去重计数, 台账有而清单没有的集合)`。
+
+    两侧的**空值都丢掉**：`None` / `""` 不是"一个缺失的条目"，
+    把它们算进分母会让覆盖率看着更好看（分母虚高、差集虚小）。
+    """
+    a = {v for v in ledger_side if v}
+    b = {k for k in known_side if k}
+    return len(a), len(b), a - b
+
+
 def key_coverage(records, known_keys) -> tuple:
     """台账里的 API Key 相对一份**外部清单**（如导出快照 CSV）的覆盖情况。
 
@@ -78,11 +89,33 @@ def key_coverage(records, known_keys) -> tuple:
       （清单有而台账没有）是另一回事（可能台账被覆盖过），本函数**不判** ——
       别把"missing 为空"读成"数据没问题"。
     """
-    ledger_keys = {r.get("api_key") for r in records
-                   if isinstance(r, dict)
-                   and str(r.get("api_key") or "").startswith(KEY_PREFIX)}
-    known = {k for k in known_keys if k}
-    return len(ledger_keys), len(known), ledger_keys - known
+    return _coverage_of(
+        [r.get("api_key") for r in records
+         if isinstance(r, dict)
+         and str(r.get("api_key") or "").startswith(KEY_PREFIX)],
+        known_keys)
+
+
+def account_coverage(records, known_emails) -> tuple:
+    """台账里的**账号**（`email`）相对一份外部清单的覆盖情况。
+
+    返回 `(台账账号数, 清单账号数, 台账有而清单没有的 email 集合)`。
+
+    与 `key_coverage` 是同一道护栏的另一个字段 —— 触发场景不同：
+
+    * `key_coverage` 管的是"**我核验了多少把 key**"（`check_keys_alive.py`）；
+    * `account_coverage` 管的是"**我能从哪个池子里取账号**"
+      （`tools/probes/probe_login_only.py` 用 `--offset/--count` 从 CSV 取号）。
+
+    后者更隐蔽：探针会报"6/6 登录成功"，你完全看不出那 6 个号是
+    **从 5 天前的 53 行快照**里取的，而台账里已经有 417 个账号。
+    登录本身没问题，但**结论的适用范围**被静默限死了。
+
+    ⚠ 与 `key_coverage` 一样，`missing` 是单向的（台账 − 清单）。
+    """
+    return _coverage_of(
+        [r.get("email") for r in records if isinstance(r, dict)],
+        known_emails)
 
 
 def merge_records(existing: list[dict], new: list[dict]):
