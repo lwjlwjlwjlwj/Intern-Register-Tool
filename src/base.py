@@ -39,4 +39,5 @@ class MailProvider(ABC):
         return []
 
     def close(self) -> None:
-        pass
+        """释放资源（无资源可释放时留空实现）。"""
+        return

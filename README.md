@@ -77,6 +77,31 @@ python tools/gates/selftest_check_leaks.py   # 验证闸门**真的会拦**（�
 本机 Chrome 路径默认 `C:\Program Files\Google\Chrome\Application\chrome.exe`，
 可通过环境变量 `IR_CHROME_PATH` 覆盖。
 
+### 📬 Web 控制台（webui）
+
+缝合自 [kaoqy/intern-register-web](https://github.com/kaoqy/intern-register-web)，
+在浏览器里可视化完成「邮箱 → 注册 → 激活 → 领额度 → 建 Key」的每一步手工操作，
+支持 worker / yyds 两种邮箱提供者（在网页「⚙️ 应用设置」里切换）。
+
+```bash
+python web.py                              # 启动后自动打开浏览器（端口被占用自动顺延）
+python web.py --no-browser --port 8080     # 不开浏览器 / 固定端口
+python web.py --data-dir D:/cfg            # 自定义配置落盘目录（默认在用户目录）
+```
+
+配置与网页填写的邮箱账号持久化在用户目录 `~/.intern-register-tool/webui-data/`，
+无需 Docker。完整说明见 [webui/README.md](webui/README.md)。
+
+**打包成单文件可执行（双击即启动）：**
+
+```bash
+build.cmd                                                          # Windows：一键打包出 dist\InternRegisterWeb.exe
+python -m PyInstaller packaging/web.spec --noconfirm --distpath dist   # Linux / macOS 同款 spec
+```
+
+> ℹ️ PyInstaller 不支持交叉编译：Linux 上打出的产物只能在 Linux 跑。
+> 最终面向 Windows 的 `InternRegisterWeb.exe` 请在自己的 Windows 机器上运行 `build.cmd` 生成。
+
 ### 环境变量
 
 **凭据（必填）**

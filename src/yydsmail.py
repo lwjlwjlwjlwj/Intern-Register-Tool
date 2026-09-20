@@ -4,7 +4,7 @@ import random
 import re
 import string
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from curl_cffi import requests as curl_requests
 
@@ -18,7 +18,7 @@ def _random_mailbox_name() -> str:
 def _parse_received_at(value) -> datetime | None:
     if isinstance(value, (int, float)):
         try:
-            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+            return datetime.fromtimestamp(float(value), tz=UTC)
         except Exception:
             return None
     text = str(value or "").strip()
@@ -26,7 +26,7 @@ def _parse_received_at(value) -> datetime | None:
         return None
     try:
         date = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
-        return date if date.tzinfo else date.replace(tzinfo=timezone.utc)
+        return date if date.tzinfo else date.replace(tzinfo=UTC)
     except Exception:
         pass
     return None
@@ -205,7 +205,7 @@ class YydsMailProvider(MailProvider):
         if not messages:
             return None
         item = max(messages, key=lambda value: (
-            (_parse_received_at(value.get("createdAt") or value.get("created_at") or value.get("receivedAt") or value.get("date") or value.get("timestamp")) or datetime.fromtimestamp(0, tz=timezone.utc)).timestamp(),
+            (_parse_received_at(value.get("createdAt") or value.get("created_at") or value.get("receivedAt") or value.get("date") or value.get("timestamp")) or datetime.fromtimestamp(0, tz=UTC)).timestamp(),
             str(value.get("id") or "")
         ))
         message_id = str(item.get("id") or item.get("message_id") or "").strip()

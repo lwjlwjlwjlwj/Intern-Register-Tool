@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Intern Register Web</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>📬 Intern Register Web</h1>
+    <p class="subtitle">OpenXLab 注册 + API Key 管理</p>
+
+    <!-- 配置检查警告 -->
+    <div id="config-alert" class="alert" style="display:none"></div>
+
+    <!-- 配置面板 -->
+    <section class="card" id="config-section">
+      <h2>⚙️ 应用设置</h2>
+      <p class="hint">配置将持久化到本机（~/.intern-register-tool/webui-data/config.json），无需环境变量</p>
+      <div class="form-grid">
+        <div class="form-item">
+          <label>邮箱提供者</label>
+          <select id="cfg-provider">
+            <option value="worker">CF Worker（temp-mail）</option>
+            <option value="yyds">YYDS Mail</option>
+          </select>
+        </div>
+        <div class="form-item">
+          <label>Worker 地址 *</label>
+          <input type="text" id="cfg-worker-base" placeholder="https://temp-email-api.yourdomain.com">
+        </div>
+        <div class="form-item">
+          <label>Admin Token *</label>
+          <input type="password" id="cfg-worker-token" placeholder="Admin Token">
+        </div>
+        <div class="form-item">
+          <label>Worker 邮箱域名 *</label>
+          <input type="text" id="cfg-worker-domain" placeholder="yourdomain.com">
+        </div>
+        <div class="form-item">
+          <label>YYDS API Key *</label>
+          <input type="password" id="cfg-yyds-key" placeholder="AC-xxxxxxxxxxxx">
+        </div>
+        <div class="form-item">
+          <label>YYDS API 地址</label>
+          <input type="text" id="cfg-yyds-base" placeholder="https://maliapi.215.im/v1">
+        </div>
+        <div class="form-item">
+          <label>YYDS 域名 (可选)</label>
+          <input type="text" id="cfg-yyds-domain" placeholder="留空用账号默认域名">
+        </div>
+        <div class="form-item">
+          <label>YYDS 子域名 (可选)</label>
+          <input type="text" id="cfg-yyds-sub" placeholder="可选">
+        </div>
+        <div class="form-item">
+          <label>代理 (可选)</label>
+          <input type="text" id="cfg-proxy" placeholder="host:port:user:pass">
+        </div>
+        <div class="form-item">
+          <label>Client ID</label>
+          <input type="text" id="cfg-client-id" placeholder="dagw07mkg1bazlxzoy31">
+        </div>
+        <div class="form-item">
+          <label>来源 Source</label>
+          <input type="text" id="cfg-source" placeholder="discovery">
+        </div>
+        <div class="form-item">
+          <label>轮询间隔 (秒)</label>
+          <input type="number" id="cfg-poll-interval" value="0.8" step="0.1" min="0.1">
+        </div>
+        <div class="form-item">
+          <label>轮询超时 (秒)</label>
+          <input type="number" id="cfg-poll-timeout" value="120" min="10">
+        </div>
+        <div class="form-item">
+          <label>请求超时 (秒)</label>
+          <input type="number" id="cfg-req-timeout" value="30" min="5">
+        </div>
+        <div class="form-item">
+          <label>配额上限 / 24h</label>
+          <input type="number" id="cfg-quota-max" value="40" min="1">
+        </div>
+      </div>
+      <div class="row" style="margin-top:15px; gap:10px;">
+        <button onclick="saveConfig()">💾 保存配置</button>
+        <button onclick="loadConfig()">🔄 重新加载</button>
+        <button onclick="checkConnection()">🔍 连接检测</button>
+        <button onclick="resetConfig()">♻️ 重置</button>
+      </div>
+      <div id="config-status" class="result"></div>
+    </section>
+
+    <!-- 连接检测结果 -->
+    <section class="card" id="check-section" style="display:none">
+      <h2>🔍 连接检测</h2>
+      <div id="check-result" class="result"></div>
+    </section>
+
+    <!-- 步骤 1: 创建邮箱 -->
+    <section class="card" id="step-mailbox">
+      <h2>1️⃣ 创建临时邮箱</h2>
+      <div class="form-grid">
+        <div class="form-item">
+          <label>域名</label>
+          <input type="text" id="mail-domain" placeholder="留空使用默认域名">
+        </div>
+        <div class="form-item">
+          <label>用户名前缀 (可选)</label>
+          <input type="text" id="mail-prefix" placeholder="留空随机生成">
+        </div>
+        <div class="form-item">
+          <label>创建数量</label>
+          <input type="number" id="mail-count" value="1" min="1" max="10">
+        </div>
+      </div>
+      <div class="row" style="margin-top:15px;">
+        <button onclick="createMailbox()">📬 创建邮箱</button>
+        <button onclick="quickCreate()">⚡ 快速创建 (用默认域名)</button>
+      </div>
+      <div id="mailbox-result" class="result"></div>
+    </section>
+
+    <!-- 步骤 2: SSO 注册 -->
+    <section class="card" id="step-sso">
+      <h2>2️⃣ SSO 注册</h2>
+      <div class="form-grid">
+        <div class="form-item">
+          <label>邮箱地址 *</label>
+          <input type="text" id="sso-email" placeholder="选择上方创建的邮箱">
+        </div>
+        <div class="form-item">
+          <label>用户名 (留空随机)</label>
+          <input type="text" id="sso-username" placeholder="lz + 6位数字">
+        </div>
+        <div class="form-item">
+          <label>密码 (留空随机)</label>
+          <input type="text" id="sso-password" placeholder="至少8位，含大小写+数字">
+        </div>
+      </div>
+      <div class="row" style="margin-top:15px;">
+        <button onclick="ssoRegister()">📝 注册</button>
+        <button onclick="generateCredentials()">🎲 生成凭据</button>
+      </div>
+      <div id="sso-result" class="result"></div>
+    </section>
+
+    <!-- 步骤 3: 等待激活 -->
+    <section class="card" id="step-activate">
+      <h2>3️⃣ 等待邮件激活</h2>
+      <div class="row">
+        <input type="text" id="act-email" placeholder="等待激活的邮箱">
+        <input type="number" id="act-timeout" value="120" min="10" placeholder="超时秒数">
+        <button onclick="waitActivation()">🔗 等待激活链接</button>
+      </div>
+      <p class="hint">自动轮询邮箱 → 提取激活链接 → 自动调用激活接口</p>
+      <div id="activate-result" class="result"></div>
+    </section>
+
+    <!-- 步骤 4: 登录获取 JWT -->
+    <section class="card" id="step-jwt">
+      <h2>4️⃣ 登录获取 JWT</h2>
+      <p class="hint">⚠️ 登录需要人机验证 (阿里云验证码2.0)，请在浏览器中手动完成</p>
+      <div class="form-grid">
+        <div class="form-item">
+          <label>用户名</label>
+          <input type="text" id="jwt-username" placeholder="注册时的用户名">
+        </div>
+        <div class="form-item">
+          <label>密码</label>
+          <input type="text" id="jwt-password" placeholder="注册时的密码">
+        </div>
+        <div class="form-item">
+          <label>已有 JWT (可选)</label>
+          <input type="text" id="jwt-token" placeholder="粘贴已有 JWT 跳过登录">
+        </div>
+      </div>
+      <div class="row" style="margin-top:15px;">
+        <button onclick="copyJwt()">📋 复制下方 JWT</button>
+      </div>
+      <div id="jwt-result" class="result"></div>
+    </section>
+
+    <!-- 步骤 5: 领取额度 & 创建 Key -->
+    <section class="card" id="step-key">
+      <h2>5️⃣ 领取额度 & 创建 API Key</h2>
+      <div class="row">
+        <input type="text" id="key-jwt" placeholder="JWT Token">
+        <input type="text" id="key-name" value="default" placeholder="Key 名称">
+      </div>
+      <div class="row" style="margin-top:10px; gap:10px;">
+        <button onclick="claimGrant()">💰 领取额度</button>
+        <button onclick="createApiKey()">🔑 创建 Key</button>
+        <button onclick="checkBalance()">📊 查余额</button>
+        <button onclick="listKeys()">📋 列出 Keys</button>
+      </div>
+      <div id="key-result" class="result"></div>
+    </section>
+
+    <!-- 查看邮件 -->
+    <section class="card" id="step-mails">
+      <h2>📧 查看邮件</h2>
+      <p class="hint" id="mails-hint" style="display:none">⚠️ 当前为 yyds 模式，邮件列表查询不可用（按账号一对一邮箱设计）</p>
+      <div class="row">
+        <input type="text" id="view-email" placeholder="邮箱地址 (留空查看全部)">
+        <button onclick="listMails()">🔍 查询</button>
+        <button onclick="refreshMails()">🔄 刷新</button>
+        <button onclick="watchEmails()">👀 自动刷新</button>
+      </div>
+      <div id="mails-list" class="mails-list"></div>
+    </section>
+
+    <!-- 一键批量 -->
+    <section class="card" id="step-batch">
+      <h2>⚡ 一键批量</h2>
+      <p class="hint">⚠️ 登录阶段仍需人工介入人机验证</p>
+      <div class="form-grid">
+        <div class="form-item">
+          <label>邮箱域名</label>
+          <input type="text" id="batch-domain" placeholder="留空使用默认">
+        </div>
+        <div class="form-item">
+          <label>数量</label>
+          <input type="number" id="batch-count" value="1" min="1" max="5">
+        </div>
+        <div class="form-item">
+          <label>前缀 (可选)</label>
+          <input type="text" id="batch-prefix" placeholder="统一前缀">
+        </div>
+      </div>
+      <div class="row" style="margin-top:15px;">
+        <button onclick="runBatch()">🚀 批量创建+注册+激活</button>
+      </div>
+      <div id="batch-result" class="result"></div>
+    </section>
+
+    <!-- 账号台账 -->
+    <section class="card" id="step-ledger">
+      <h2>📒 账号台账</h2>
+      <p class="hint">本次运行产生的账号记录（不持久化）</p>
+      <div class="row">
+        <button onclick="clearLedger()">🗑️ 清空台账</button>
+      </div>
+      <div id="ledger-list" class="mails-list"></div>
+    </section>
+
+    <!-- 日志 -->
+    <section class="card">
+      <h2>📋 日志</h2>
+      <button onclick="clearLog()">清空日志</button>
+      <div id="log" class="log"></div>
+    </section>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

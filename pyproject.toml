@@ -14,6 +14,10 @@ dependencies = [
     "cryptography>=42.0",
     "playwright>=1.40",
     "curl_cffi>=0.7.0",
+    # Web 控制台（web.py / webui/）—— 与 run.py 链路互不依赖
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "jinja2>=3.1",
 ]
 
 # 开发依赖与运行依赖分开 —— CI 的 secret-scan job 只装运行依赖（甚至不装），
@@ -36,7 +40,7 @@ dev = [
 #    2026-09-19 阶段 B 把 `browser_login.py` 拆成 `src/browser/` 之后，
 #    漏加这一项就会让构建出来的 wheel **缺整个子包**，而且不报错。
 [tool.setuptools]
-packages = ["src", "src.browser"]
+packages = ["src", "src.browser", "webui"]
 
 
 [tool.pytest.ini_options]

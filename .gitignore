@@ -145,3 +145,9 @@ env/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+
+# ── 10. 打包产物（PyInstaller）─────────────────────────────────
+dist/
+build/
+*.spec.tmp
