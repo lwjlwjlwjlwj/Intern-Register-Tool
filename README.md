@@ -83,9 +83,19 @@ python tools/gates/selftest_check_leaks.py   # 验证闸门**真的会拦**（�
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `IR_WORKER_ADMIN_TOKEN` | **无 —— 必填** | CF Worker 的 Admin Token。缺失时启动阶段即报错退出 |
-| `IR_WORKER_BASE` | **无 —— 必填** | 临时邮箱 Worker 地址，形如 `https://<worker>.<subdomain>.workers.dev` |
-| `IR_WORKER_DOMAIN` | **无 —— 必填** | 建邮箱使用的域名（须在该 Worker 的域名列表里） |
+| `IR_MAIL_PROVIDER` | `worker` | 临时邮箱提供者：`worker`（CF Worker，默认）或 `yyds`（YYDS Mail）。选 `yyds` 时必填下表的 `IR_YYDS_API_KEY`，不再需要 CF Worker 三件套 |
+| `IR_WORKER_ADMIN_TOKEN` | **无 —— 必填**（`worker` 模式） | CF Worker 的 Admin Token。缺失时启动阶段即报错退出 |
+| `IR_WORKER_BASE` | **无 —— 必填**（`worker` 模式） | 临时邮箱 Worker 地址，形如 `https://<worker>.<subdomain>.workers.dev` |
+| `IR_WORKER_DOMAIN` | **无 —— 必填**（`worker` 模式） | 建邮箱使用的域名（须在该 Worker 的域名列表里） |
+
+**YYDS Mail（`IR_MAIL_PROVIDER=yyds` 时）**
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `IR_YYDS_API_KEY` | **无 —— 必填** | YYDS Mail API Key。缺失时启动阶段即报错退出 |
+| `IR_YYDS_BASE_URL` | `https://maliapi.215.im/v1` | YYDS API base |
+| `IR_YYDS_DOMAIN` | 未设 | 建邮箱使用的域名（不填用 API 默认域名） |
+| `IR_YYDS_SUBDOMAIN` | 未设 | 建邮箱使用的子域名（可选） |
 
 **可选（都有实测默认值，通常不用动）**
 

@@ -41,6 +41,17 @@ WORKER_BASE = os.getenv("IR_WORKER_BASE", "")
 WORKER_ADMIN_TOKEN = os.getenv("IR_WORKER_ADMIN_TOKEN", "")
 WORKER_DOMAIN = os.getenv("IR_WORKER_DOMAIN", "")
 
+# ── 临时邮箱提供者选择 ───────────────────────────────────────────
+# 可选值：worker（CF Worker，默认）| yyds（YYDS Mail）
+# 选 yyds 时需配置 YYDS_API_KEY，且不再要求 WORKER_ADMIN_TOKEN。
+MAIL_PROVIDER = os.getenv("IR_MAIL_PROVIDER", "worker").strip().lower()
+
+# ── YYDS Mail 临时邮箱 ───────────────────────────────────────────
+YYDS_API_KEY = os.getenv("IR_YYDS_API_KEY", "")
+YYDS_BASE_URL = os.getenv("IR_YYDS_BASE_URL", "https://maliapi.215.im/v1")
+YYDS_DOMAIN = os.getenv("IR_YYDS_DOMAIN", "")
+YYDS_SUBDOMAIN = os.getenv("IR_YYDS_SUBDOMAIN", "")
+
 # ── OpenXLab SSO ─────────────────────────────────────────────────
 SSO_BASE = "https://sso.openxlab.org.cn"
 SSO_GW = f"{SSO_BASE}/gw/uaa-be/api/v1"
@@ -388,14 +399,19 @@ def validate(*, need_worker_token: bool = True) -> list[str]:
     由入口显式调用，报错时直接给出修法。
     """
     missing = []
-    if need_worker_token and not WORKER_ADMIN_TOKEN:
-        missing.append("IR_WORKER_ADMIN_TOKEN")
-    # 这两项不再有写死的默认值（本仓库是公开的），缺失时在入口报错，
-    # 而不是带着空 base 去发一堆注定失败的请求。
-    if not WORKER_BASE:
-        missing.append("IR_WORKER_BASE")
-    if not WORKER_DOMAIN:
-        missing.append("IR_WORKER_DOMAIN")
+    if MAIL_PROVIDER == "yyds":
+        # YYDS Mail 模式：只需 API Key，不再要求 CF Worker 三件套。
+        if not YYDS_API_KEY:
+            missing.append("IR_YYDS_API_KEY")
+    else:
+        if need_worker_token and not WORKER_ADMIN_TOKEN:
+            missing.append("IR_WORKER_ADMIN_TOKEN")
+        # 这两项不再有写死的默认值（本仓库是公开的），缺失时在入口报错，
+        # 而不是带着空 base 去发一堆注定失败的请求。
+        if not WORKER_BASE:
+            missing.append("IR_WORKER_BASE")
+        if not WORKER_DOMAIN:
+            missing.append("IR_WORKER_DOMAIN")
 
     # 配了槽位池却没给「端口 -> 出口 IP」映射：`slot_scope()` 会在**第一个任务**
     # 才抛错，那时已经跑了一半。提前到启动阶段报，并指路到探测器。

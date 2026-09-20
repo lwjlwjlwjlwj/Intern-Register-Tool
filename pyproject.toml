@@ -13,6 +13,7 @@ dependencies = [
     "requests>=2.31",
     "cryptography>=42.0",
     "playwright>=1.40",
+    "curl_cffi>=0.7.0",
 ]
 
 # 开发依赖与运行依赖分开 —— CI 的 secret-scan job 只装运行依赖（甚至不装），
