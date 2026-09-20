@@ -55,6 +55,7 @@ from pathlib import Path
 
 from _bootstrap import ROOT  # noqa: F401  （副作用：把仓库根加进 sys.path）
 
+from src import cli as _cli  # noqa: E402  （必须在 _bootstrap 之后）
 from src import ledger  # noqa: E402  （必须在 _bootstrap 之后：它才把仓库根加进 sys.path）
 
 # 台账**读源** = `runs/` 里最新的全量快照。注意它是**每次落盘都换名字**的，
@@ -105,6 +106,13 @@ def run_one(d: dict, *, headless: bool, create: bool, key_name: str,
 
     返回 dict 而不是 AccountRecord：台账里那 38 条从 CSV 恢复的记录字段
     比 dataclass 少，整条覆盖会把它们已有的 `source` 等字段洗掉。
+
+    🔴 本函数与 `src/pipeline.py:stage_login_key` 是**同一段下游链路的两个版本**，
+       差异是**有意的**，别"顺手统一" —— 逐字段 ceiling 表与"为什么不能合并"
+       见 `docs/audit-2026-09-20.md` §2.2「B7a」。最容易踩的两条：
+         · 这里**调** `list_keys()` 并落 `balance_raw` 全量（pipeline 两件都不做）。
+         · 这里的校验含 `chat()` 真发一次推理（pipeline 只 `list_models`）。
+       两边的调用序列由 `tests/test_downstream_divergence.py` 钉住。
     """
     from src.discovery import DiscoveryClient
 
@@ -296,10 +304,11 @@ def main() -> int:
                     help="其中前 N 个**真建新 key**（验证建 Key 路径）。"
                          "0=全部只做幂等复用（默认，不污染 key 列表）")
     ap.add_argument("--key-name", default="default", help="复用/新建的 key 名")
-    ap.add_argument("--headless", action="store_true", default=True,
-                    help="无头浏览器（**默认**，不弹窗口）")
-    ap.add_argument("--headful", dest="headless", action="store_false",
-                    help="有头浏览器（弹窗口；只在要肉眼看流程时用）")
+    # `--headless` / `--headful` 的接线与 `run.py` 共用（见 src/cli.py）。
+    # ⚠ 别把模块级 `DEFAULT_IN` / `DEFAULT_OUT` 也搬进 src/cli.py ——
+    #   它们是**冻住 import 时刻**那份快照的取值（上面 :65-67 写了为什么无害），
+    #   搬走会让"什么时候取值"从可见变成不可见。
+    _cli.add_headless_args(ap)
     ap.add_argument("--out", default=str(DEFAULT_OUT),
                     help="台账输出。默认 = 台账读源，此时落"
                          "ledger/runs/<日期>/results-<时间戳>.json 快照（随即成为新读源）"
@@ -437,14 +446,20 @@ def main() -> int:
         return 0
 
     merged, kept, added, upgraded = ledger.merge_records(existing, results)
-    print(f"\n结果合并：原有 {kept} 条 + 本次新增 {added} 条"
-          + (f"（{upgraded} 条已更新：升级或补全字段）" if upgraded else "")
-          + f" = {len(merged)} 条")
+    # 格式与 `run.py` 共用（src/cli.py）。
+    # ⚠ 这里**没有** `if kept:` 守卫，`run.py` 有 —— 那是刻意的差异，
+    #   所以共用的是**文本**，不是"打印"这个动作。
+    print(_cli.merge_summary_line(kept, added, upgraded, len(merged)))
     # 🔴 2026-09-20 修：`--out` 原来是**解析了但没人用**的（写盘写死在
     #    `src_path`）。参数被忽略是最难发现的一类缺陷 —— help 里承诺了、
     #    实际不生效，而使用者只会觉得"我明明指定了路径"。
     dest = Path(args.out)
     try:
+        # 🔴 判据是 `is_ledger_path(dest)`（"路径在不在台账目录里"），
+        #    **不是** `run.py` 那边的 `out is None`。两者在
+        #    "显式 `--out` 指向 ledger/ 内部" 这一种输入下**行为不同**：
+        #    本工具会落快照，`run.py` 会走纯导出。
+        #    这是**有意的**，别"顺手统一"—— 统一会悄悄改掉一边已承诺的语义。
         if ledger.is_ledger_path(dest):
             # 目标在台账目录里 ⇒ 走台账目录：留一份日期/时间戳快照（它随即成为
             # **新读源**），并把本次结果刷进 `latest.json`。

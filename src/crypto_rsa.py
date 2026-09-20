@@ -14,6 +14,11 @@
   - 只加密 password（不带 email 前缀和时间戳）→ 服务端报 A0216「用户密码解密失败」
   - 时间戳必须是秒级整数，与客户端本地时间一致
   - 注册/登录/改密三种场景的 identity 分别是 email / account / email
+  - 🔴 PKCS#1 v1.5 的**加密**填充是**随机**的（签名才是确定性的）⇒ 同一组输入
+    两次加密得到的密文**不同**。所以任何"比对两次密文"的用法都在比噪声 ——
+    探针一律比**服务端响应**，不比密文。这条不变式由
+    `tests/test_crypto_rsa.py` 钉住（该文件同时接管了原先那个无人调用的
+    `selftest()` 所断言的长度不变式）。
 """
 
 import base64
@@ -44,9 +49,3 @@ def encrypt_password(identity: str, password: str, timestamp: int | None = None)
     plain = f"{identity}||{password}{ts}"
     cipher = _PUBLIC_KEY.encrypt(plain.encode("utf-8"), padding.PKCS1v15())
     return base64.b64encode(cipher).decode("ascii")
-
-
-def selftest() -> bool:
-    """自检：密文长度应为 RSA-1024 单块（128 字节 → base64 172 字符）。"""
-    ct = encrypt_password("a@b.com", "Test123!")
-    return 168 <= len(ct) <= 176

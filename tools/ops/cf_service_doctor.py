@@ -48,6 +48,16 @@
     python tools/ops/cf_service_doctor.py --hours 8
     python tools/ops/cf_service_doctor.py --json .workbuddy-ai/exports/service_doctor.json
 
+🔴 **本工具的 4 个凭据/标识全部只走环境变量，刻意不写进 `.env.example`** ——
+   写进去就等于鼓励把它们落到磁盘上（`.env` 也是文件）。`--full` 模式需要：
+
+| 变量 | 必需性 | 说明 |
+|---|---|---|
+| `CF_API_TOKEN` | 可选 | 缺了**降级不退出**：只跑"端点直连"那一半（见 `main()`）。token 无效同样降级 |
+| `CF_ACCOUNT_ID` | `--full` 必需 | 账户 ID |
+| `CF_WORKER_NAME` | `--full` 必需 | Worker 名 |
+| `CF_D1_DATABASE_ID` | `--full` 必需 | D1 库 ID，用于核对 `rows_read` |
+
 退出码：0 = 服务可用；1 = 被 D1 配额限制（等重置）；2 = token 无效；3 = 其他
 """
 
@@ -107,15 +117,6 @@ def api_get(path: str, token: str, timeout: int = 60):
             return e.code, json.loads(body)
         except Exception:
             return e.code, {"raw": body[:400].decode("utf-8", "replace")}
-
-
-def api_get_raw(path: str, token: str, timeout: int = 120):
-    req = urllib.request.Request(API + path, headers={"Authorization": f"Bearer {token}"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read()
 
 
 def d1_query(sql: str, token: str, account: str, db: str, timeout: int = 60):

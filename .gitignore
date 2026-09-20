@@ -73,6 +73,15 @@ accounts.json
 #    ⚠ 这条例外只放行这一个文件，不放行整个目录 —— 别写成 `!tests/fixtures/*`。
 !tests/fixtures/ledger_sample.json
 
+# 🔴 2026-09-20（B5）第二份夹具，同一个坑**再踩一次**：
+#    `report_render_golden.json`（报告层 stdout 金标准）生成完，
+#    `git status` **根本不显示它**（被上面的 `*.json` 吞了）——
+#    本地 pytest 全绿，而新克隆的仓库会 FileNotFoundError。
+#    ⇒ 真正的失效点不是"忘了加例外"，而是**例外必须逐文件手写**这件事本身。
+#      已补 `tests/test_repo_hygiene.py` 把这个不变量变成可执行断言：
+#      `tests/fixtures/` 下每个文件都必须 `git check-ignore` 返回"未被忽略"。
+!tests/fixtures/report_render_golden.json
+
 # 过程截图（`--shot` 产物）
 *.png
 *.jpg

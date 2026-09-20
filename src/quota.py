@@ -66,7 +66,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config
+from . import config, fsutil
 
 _LOCK = threading.Lock()
 
@@ -263,11 +263,11 @@ def _compact_if_needed(st: QuotaStatus) -> None:
         cutoff = time.time() - st.window_h * 3600
         keep = [r for r in _read_all() if r["ts"] >= cutoff]
         try:
-            tmp = p.with_suffix(".tmp")
-            tmp.write_text(
-                "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in keep),
-                encoding="utf-8")
-            tmp.replace(p)
+            # 原子重写：压缩到一半被 Ctrl-C 会留下半截 JSONL —— 而 `_read_all()`
+            # 对半截行是**静默跳过**的，症状是计数莫名变少（保护变松）。
+            # 实现已归一，见 src/fsutil.py（2026-09-20）。
+            fsutil.atomic_write_text(
+                p, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in keep))
         except OSError:
             pass
 

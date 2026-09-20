@@ -112,7 +112,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config, redact
+from . import config, fsutil, redact
 
 
 def state_path() -> Path:
@@ -438,15 +438,13 @@ class ProxySlotPool:
 
         p = state_path()
         try:
-            p.parent.mkdir(parents=True, exist_ok=True)
             # 先写临时文件再原子替换：批量跑一半被 Ctrl-C，不该留下半个 JSON
             # （下次读会降级成"没有状态"，冷却全丢 —— 静默的那种）。
-            tmp = p.with_suffix(p.suffix + ".tmp")
-            tmp.write_text(
+            # 实现已归一，见 src/fsutil.py（2026-09-20）。
+            fsutil.atomic_write_text(
+                p,
                 json.dumps({"version": 1, "saved_at": round(now, 3), "slots": slots},
-                           ensure_ascii=False, indent=2),
-                encoding="utf-8")
-            os.replace(tmp, p)
+                           ensure_ascii=False, indent=2))
         except OSError as ex:
             self._warn(f"⚠ 池子状态写盘失败（{p}）：{ex} —— 本次运行不受影响，"
                        f"但冷却不会跨运行保留")

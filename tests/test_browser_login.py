@@ -456,13 +456,27 @@ def test_cli_defaults_to_headless_with_headful_optout(cli):
     ⚠ 保留 `--headless`（`default=True`）是**刻意的**：
       旧脚本与文档里到处是 `--headless`，删掉它会让那些命令直接报错。
       它现在是幂等的 no-op，不是必需的。
+
+    🔴 2026-09-20（B6）**改靶**：这一对开关的定义搬进了 `src/cli.py`
+      —— 两个入口原先各写一份，help 文本已经漂移成"无头模式"/"无头浏览器"
+      和"需要肉眼看"/"要肉眼看"（见 `docs/audit-2026-09-20.md` §3.1）。
+      所以这里不再断言"入口文件里出现那两行字面量"：那会让**搬家后代码其实是对的**
+      而测试变红。改成断言「入口把它**接线**进来」+「那份**共用定义本身**是对的」。
+
+    ⚠ 判据仍钉得住当初的缺陷：`--headful` 的 `dest` 丢了、或哪个入口不再接线，
+      这两条断言都会红。开关的**运行时语义**（`--headful` 真的把 headless 置 False）
+      在 `tests/test_cli_skeleton.py` 里用真 argparse 跑过，比文本匹配更强。
     """
     src = cli.read_text(encoding="utf-8")
-    assert 'ap.add_argument("--headless", action="store_true", default=True' in src, (
-        f"{cli.name}: --headless 没有翻成默认 True"
+    assert "_cli.add_headless_args(ap)" in src, (
+        f"{cli.name}: 没有接线 src.cli.add_headless_args —— 又手写了一份？")
+
+    shared = (_ROOT / "src" / "cli.py").read_text(encoding="utf-8")
+    assert 'ap.add_argument("--headless", action="store_true", default=True' in shared, (
+        "src/cli.py: --headless 没有翻成默认 True"
     )
-    assert 'ap.add_argument("--headful", dest="headless", action="store_false"' in src, (
-        f"{cli.name}: 没有 --headful 退出通道 —— 想弹窗口就没法了"
+    assert 'ap.add_argument("--headful", dest="headless", action="store_false"' in shared, (
+        "src/cli.py: 没有 --headful 退出通道 —— 想弹窗口就没法了"
     )
 
 

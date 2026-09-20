@@ -79,28 +79,53 @@ def test_all_values_formatted_to_one_decimal():
 
 # ── [4] 静态接线：标签与取值必须在同一个 print 里 ──────────────────────
 
-def test_labels_and_values_share_one_print_call():
-    """标签和取值必须落在**同一个 `print(...)` 调用**里。
+def _prints_mentioning(text: str, needle: str) -> list[str]:
+    """返回 `text` 里所有「实参中出现 `needle`」的 `print(...)` 调用的 AST dump。
 
-    只测 `latency_summary()` 本身不够 —— 缺陷出在**调用方**：把均值挪到上一行，
-    函数依旧全绿。所以必须静态检查 run.py 的接线。
+    ⚠ 必须走 AST，不能搜文本 —— 注释里提到 `LATENCY_LABELS` 不算"印了它"，
+      而本项目在注释里写反面教材是常态（搜文本会被自己的注释判红）。
     """
-    src = (_ROOT / "run.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-
     hits = []
-    for node in ast.walk(tree):
+    for node in ast.walk(ast.parse(text)):
         if not isinstance(node, ast.Call):
             continue
         if not (isinstance(node.func, ast.Name) and node.func.id == "print"):
             continue
         seg = ast.dump(node)
-        if "LATENCY_LABELS" in seg:
+        if needle in seg:
             hits.append(seg)
+    return hits
+
+
+def test_labels_and_values_share_one_print_call():
+    """标签和取值必须落在**同一个 `print(...)` 调用**里。
+
+    只测 `latency_summary()` 本身不够 —— 缺陷出在**调用方**：把均值挪到上一行，
+    函数依旧全绿。所以必须静态检查**真正印这一行的那份源码**。
+
+    ⚠ 2026-09-20（B5）这个 print 从 `run.py` 搬到了 `src/report.py`，检查目标
+      随之改 —— 判据本身（标签与取值同处一个 print）没变。
+      「找不到」**不能**算通过：那正是护栏失效的形态。
+    """
+    src = (_ROOT / "src" / "report.py").read_text(encoding="utf-8")
+    hits = _prints_mentioning(src, "LATENCY_LABELS")
 
     assert len(hits) == 1, f"应当恰好有一处 print 用到 LATENCY_LABELS，实际 {len(hits)} 处"
     assert "latency_summary" in hits[0], (
         "标签所在的那个 print 里没有取值的调用 —— 标签和取值又分家了")
+
+
+def test_run_py_no_longer_prints_the_latency_line_itself():
+    """run.py 只能**调用**渲染层，不能自己留一份打印逻辑。
+
+    这条是给 B5 的搬迁兜底的：只搬走一半（例如统计行搬了、明细表留着）
+    会让两处逻辑并存，而上面那条因为只扫 `report.py` 照样全绿。
+    """
+    src = (_ROOT / "run.py").read_text(encoding="utf-8")
+    assert not _prints_mentioning(src, "latency_summary"), (
+        "run.py 里还留着印汇总行的 print —— 应当只走 report.render_batch_report")
+    assert "render_batch_report" in src, (
+        "run.py 没有调用渲染层 —— 报告块是不是没搬完？")
 
 
 def test_run_py_uses_the_shared_labels_constant():
@@ -108,6 +133,8 @@ def test_run_py_uses_the_shared_labels_constant():
     src = (_ROOT / "run.py").read_text(encoding="utf-8")
     assert "均值 / 中位 / 最快 / 最慢" not in src, (
         "run.py 里出现了硬编码的标签字面量 —— 应当用 report.LATENCY_LABELS")
+    assert "LATENCY_LABELS" not in src, (
+        "run.py 不该再直接碰标签常量 —— 印它的是 report.render_batch_report")
 
 
 def test_run_py_no_longer_imports_statistics_locally():

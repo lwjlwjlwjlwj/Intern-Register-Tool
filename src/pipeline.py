@@ -457,7 +457,8 @@ def stage_register(mail: TempMailClient, sso: SSOClient, rec: AccountRecord,
         mark("mailbox", t)
         log(f"mailbox: {rec.email}")
 
-        # 不再调 check_email：邮箱是 Worker 刚建的，不可能已注册。
+        # 不查邮箱是否已注册（`SSOClient.check_email` 已随死代码一并删除）：
+        # 邮箱是 Worker 刚建的，不可能已注册。
         # 万一撞上（地址被回收复用），register 本身会报错，不影响正确性。
         t = time.time()
         username = gen_username()
@@ -585,6 +586,14 @@ def stage_login_key(rec: AccountRecord, *, session=None, headless: bool = True,
              🔴 批量场景应传 False —— 新建 key 在网关侧有 ~10s 传播延迟，
              在关键路径上等它等于每个账号白等 ~7s。改由 `verify_keys()`
              在流水线末尾统一校验，那时传播早已完成，几乎瞬时。
+
+    🔴 本函数与 `tools/run_downstream.py:run_one` 是**同一段下游链路的两个版本**，
+       差异是**有意的**，别"顺手统一" —— 逐字段 ceiling 表与"为什么不能合并"
+       见 `docs/audit-2026-09-20.md` §2.2「B7a」。最容易踩的两条：
+         · 这里**不调** `list_keys()`（下游工具调）。本函数的只读+建 key 包在
+           **同一个 try** 里，多加一次请求 = 多一个让账号变 `failed` 的失败点。
+         · 这里落 `stages["captcha_path"]`（下游工具只 log，不落盘）。
+       两边的调用序列由 `tests/test_downstream_divergence.py` 钉住。
     """
     t0 = time.time()
     try:

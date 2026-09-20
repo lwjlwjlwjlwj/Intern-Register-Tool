@@ -79,10 +79,6 @@ class DiscoveryClient:
             self.session.cookies.update(cookies)
         self._apply_auth()
 
-    def set_cookies(self, cookies: dict):
-        if cookies:
-            self.session.cookies.update(cookies)
-
     def _apply_auth(self):
         if self.jwt:
             self.session.headers["Authorization"] = f"Bearer {self.jwt}"
@@ -92,19 +88,6 @@ class DiscoveryClient:
     def set_jwt(self, jwt: str):
         self.jwt = jwt
         self._apply_auth()
-
-    # ── 鉴权 ──────────────────────────────────────────────────
-    def exchange_code_for_jwt(self, code: str) -> str:
-        """用 SSO 的 uaa code 换取 discovery 的 JWT。"""
-        r = self.session.post(f"{self.base}/user-center/v1/users/auth",
-                              json={"code": code}, timeout=self.timeout)
-        r.raise_for_status()
-        data = r.json()
-        token = (data.get("data") or {}).get("token", "")
-        if not token:
-            raise RuntimeError(f"exchange_code_for_jwt failed: {data}")
-        self.set_jwt(token)
-        return token
 
     def get_user_info(self) -> dict:
         """用户信息 —— 注意此接口 JWT 走 body。"""

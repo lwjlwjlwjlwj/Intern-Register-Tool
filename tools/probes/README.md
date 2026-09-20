@@ -26,15 +26,23 @@
 | `probe_reg_interval.py` ⚠️ 消耗配额 | `register/byEmail` 两次之间的**最小安全间隔**是多少 | 想改 `REG_MIN_INTERVAL`（现值 1.2s）时 | 各间隔档位的 429 数与耗时；间隔直接决定"首账号就绪时刻" | README「429 限流的真实边界」 |
 | `probe_quota_scope.py` ⚠️ 消耗配额 | 注册封禁是 **IP 维度**还是**邮箱域名维度** | 怀疑"换发信域名能解封"时 | 同 IP 只换域名后是否**仍**返回 `B0000`（实测：仍封 ⇒ 换域名没用） | README「注册配额是累计量限制」 |
 | `probe_register_ip.py` ⚠️ 消耗配额 | 封禁是不是 IP 维度、**换出口 IP 能不能解开** | 接入槽位池后做决定性实验 | 同邮箱域名 / 同参数、只换出口 IP 后的 `msgCode` | README「注册配额是累计量限制」 |
-| `probe_balance.py` | 用**已存 JWT** 直查额度（不开浏览器、不登录） | 只想看额度、不想付登录代价时 | `credits/balance` 数值、单账号耗时（~0.5s，可几十路并发） | README「免费额度的真实结构」 |
+| `probe_balance.py` | 用**已存 JWT** 直查额度（不开浏览器、不登录） | 只想看额度、不想付登录代价时 | `credits/balance` 数值、单账号耗时（~0.5s，可几十路并发） | docs/protocol.md「免费额度的真实结构」 |
 | `probe_login_only.py` | 只测**登录**阶段（不注册、不建 key）；以及 `workers` 的真实扩展边界 | 注册被封但还想干活时；复测并发度时 | 登录成功率、`--with-discovery` 能否取回 JWT、各 `workers` 档位耗时 | README「workers 的边界」 |
 | `probe_login_timing.py` | 登录各段的真实耗时拆解 | 优化登录耗时前（先归因，别猜） | `goto / form_ready / typed / checkbox / warmup / captcha_ready` 六段；`captcha_wait` 恒 ~4.3–4.5s | README「实测耗时」 |
 | `probe_login_route.py` | SSO 登录页有没有"**直达密码表单**"的路由 | 想省掉进表单的两次点击时 | `form_ready` 现状 **3.3s**；若 SPA 会把路由同步到地址栏，就能直接 `goto` | README「实测耗时」 |
-| `probe_captcha_timing.py` | 验证码初始化等待期做鼠标微移动，**加快还是拖慢** `TRACELESS→CHECK_BOX` 降级 | 怀疑"暖场反而变慢"时 | 事件时间线（粗粒度总耗时无法归因，必须拿时间线） | README「验证码有两条通路」 |
+| `probe_captcha_timing.py` | 验证码初始化等待期做鼠标微移动，**加快还是拖慢** `TRACELESS→CHECK_BOX` 降级 | 怀疑"暖场反而变慢"时 | 事件时间线（粗粒度总耗时无法归因，必须拿时间线） | docs/protocol.md「验证码有两条通路」 |
 | `probe_headless.py` | **无头**浏览器能不能过验证码（H1/H2/H3 三组配置） | 想省掉有头窗口时 | 每组是否通过 + dump 出的指纹里哪几个字段异常 | README「无头浏览器：实测可用」 |
-| `probe_env.py` | `viewport=` 覆盖 vs `--window-size` 两种模式的**指纹一致性** | 改浏览器启动参数时 | 是否出现 `innerWidth > outerWidth` —— 真实浏览器不可能出现的硬性自动化特征 | README「浏览器登录：反检测要少做」 |
-| `probe_proxy.py` | 代理**真的能用于本项目**吗（换出口绕开注册封禁） | 换代理 / 换订阅时 | **出口 IP**。🔴 不看 TCP 连通性（TUN + fake-ip 会给你 0.02s 的假连通），也不看状态码，要看响应正文 | README「其它三个必要条件」 |
+| `probe_env.py` | `viewport=` 覆盖 vs `--window-size` 两种模式的**指纹一致性** | 改浏览器启动参数时 | 是否出现 `innerWidth > outerWidth` —— 真实浏览器不可能出现的硬性自动化特征 | docs/protocol.md「浏览器登录：反检测要少做」 |
+| `probe_proxy.py` | 代理**真的能用于本项目**吗（换出口绕开注册封禁） | 换代理 / 换订阅时 | **出口 IP**。🔴 不看 TCP 连通性（TUN + fake-ip 会给你 0.02s 的假连通），也不看状态码，要看响应正文 | docs/protocol.md「其它三个必要条件」 |
 | `probe_slots.py` | **有多少个槽位 ≠ 有多少个出口 IP**，以及每个出口能不能到目标站 | 生成 `slots.txt` 后、跑批量前 | `SLOT-nn (端口) -> 出口 IP` 映射表；映射错了配额会被记到别的 IP 头上 | `tools/ops/gen_mihomo_slots.py` 的 docstring |
+
+## 探针专用环境变量
+
+这些**只被探针读**，生产代码不碰，所以不进 `.env.example`（那里是运行配置模板）。
+
+| 变量 | 谁读 | 作用 |
+|---|---|---|
+| `IR_PROBE_FALLBACK_DOMAIN` | `probe_quota_scope.py:64` | "对照组"发信域名。默认空串 ⇒ 对照组的两个域名会是 `['<IR_WORKER_DOMAIN>', '']`，第二个必然失败，**实验等于没做**。跑之前必须填成你 Worker 支持的**另一个**域名（刻意选不同后缀，才能排除"同一后缀被连带"的解释） |
 
 ## 已经不再需要跑的
 

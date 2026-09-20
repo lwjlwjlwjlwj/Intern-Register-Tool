@@ -37,6 +37,8 @@
 `latest.json` 用"写同目录临时文件 + 原子替换"刷新，读者永远看到一个完整的
 JSON（不是软链 —— Windows 建软链要开发者模式，而"读不到台账"在本项目是
 最高危的静默失败，`tests/conftest.py` 记过它在 CI 上炸出的三种形态）。
+⚠ 这个写法的实现在 `src/fsutil.py`（2026-09-20 起与 `proxypool` / `quota`
+  的另外两处共用一份）；本模块的 `_atomic_write()` 只是它的一层薄封装。
 
 所以"合并而不是覆盖"这条规则必须**只有一处实现**，被所有会写台账的工具复用
 （`run.py` / `tools/run_downstream.py` / `tools/data/recover_activation.py` 用
@@ -47,10 +49,11 @@ JSON（不是软链 —— Windows 建软链要开发者模式，而"读不到�
 """
 
 import json
-import os
 import re
 import time
 from pathlib import Path
+
+from . import fsutil
 
 # 台账目录：仓库根下的 `ledger/`（整个目录被 .gitignore 忽略 —— 里面是明文凭据）。
 # ⚠ 用 `Path(__file__).resolve().parents[1]` 而不是 `Path.cwd()`：cwd 是调用者的，
@@ -369,20 +372,25 @@ def _guard_no_shrink(records: list[dict], existing) -> None:
 
 
 def _atomic_write(path, records: list[dict]) -> None:
-    """写 JSON：先落同目录临时文件再原子替换，读者永远看不到半个文件。
+    """写 JSON 台账：先落同目录临时文件再原子替换，读者永远看不到半个文件。
 
     🔴 直接 `write_text` 有真实的半截风险：台账约 1 MB，写到一半被 Ctrl-C /
        进程被杀，留下的就是一个**语法不完整的 JSON** ⇒ 下次 `load_existing()`
        返回 `[]` ⇒ 合并退化成"只有本次" ⇒ 静默丢台账。
        这不是理论风险 —— `merge_fragments` 整个函数就是为"从碎片重建"而写的。
-    `.tmp` 后缀落在 `.gitignore` 的 `*.tmp*` 家族里，不会漏进仓库。
+
+    ⚠ 这里**保留 `_atomic_write` 这个名字**，而不是让三个调用点直接调
+      `fsutil.atomic_write_text()`：`tests/test_ledger_layout.py` 的
+      `test_snapshot_is_written_before_latest` 靠 monkeypatch 这个名字来验证
+      "**先写快照、后刷 latest**"这个**顺序**。改名会让那条用例静默失效
+      （monkeypatch 一个不存在的属性会直接报错，但如果只是把调用点换成
+      `fsutil.`，spy 就再也拦不到，用例会以"calls == []"失败 —— 而失败原因
+      看着像"没写文件"，跟改名毫无关联）。
+
+    具体实现已归一 —— 2026-09-20 起三处原子写盘共用 `fsutil.atomic_write_text`。
     """
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(records, ensure_ascii=False, indent=2),
-                   encoding="utf-8")
-    os.replace(tmp, p)
+    fsutil.atomic_write_text(
+        path, json.dumps(records, ensure_ascii=False, indent=2))
 
 
 def save(path, records: list[dict], *, existing: list[dict] = None) -> Path:

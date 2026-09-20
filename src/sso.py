@@ -69,16 +69,18 @@ class SSOClient:
         return h
 
     def _post(self, path: str, payload: dict, *, referer: str = "/register",
-              auth: str = None, attempts: int = 4) -> requests.Response:
+              attempts: int = 4) -> requests.Response:
         """带退避重试的 POST。
 
         🔴 为什么必须有：`register/byEmail` 有写操作限流。实测 4 路并发注册时
         3 路立刻拿到 `429 Too Many Requests`（~1.2s 就返回，不是超时）。
         把 429 当注册失败会让批量任务大面积假失败 —— 它只是"慢点再来"。
+
+        ⚠ 2026-09-20 删掉了原先的 `auth: str = None` 形参（连同一个
+        `if auth: h["Authorization"] = …` 分支）：它唯一的调用者是已删除的
+        `internal_auth()`，删后全仓无调用者传 `auth=`（已 grep 确认）。
         """
         h = self._headers(referer)
-        if auth:
-            h["Authorization"] = f"Bearer {auth}"
         url = f"{self.gw}{path}"
         last = None
         for i in range(attempts):
@@ -101,11 +103,6 @@ class SSOClient:
         return last
 
     # ── 可用性校验 ────────────────────────────────────────────
-    def check_email(self, email: str) -> bool:
-        """True 表示该邮箱已注册。"""
-        r = self._post("/register/check", {"item": email, "type": "email"})
-        return bool((r.json().get("data") or {}).get("exist"))
-
     def check_username(self, username: str) -> bool:
         """True 表示用户名可用。"""
         r = self._post("/personal/username/check", {"username": username})
@@ -148,10 +145,3 @@ class SSOClient:
         if not token or not sign:
             raise ValueError(f"activation url missing token/sign: {url}")
         return self.activate(token, sign)
-
-    # ── 登录取 code（需已登录态；纯 HTTP 下会被验证码拦截）────
-    def internal_auth(self, jwt: str) -> str:
-        """用 SSO JWT 换取 clientId 对应的 code。"""
-        r = self._post("/internal/auth", {"clientId": config.CLIENT_ID},
-                       referer="/authentication", auth=jwt)
-        return (r.json().get("data") or {}).get("code", "")
