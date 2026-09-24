@@ -33,6 +33,7 @@
 """
 
 import json
+import os
 import queue
 import random
 import string
@@ -85,12 +86,16 @@ REG_CONCURRENCY = 4
 #
 # 取 1.2s = 实测干净的 1.0s + 20% 余量。
 #
+# ⚠ 2026-09-24 起可被 `IR_REG_MIN_INTERVAL` 覆盖：网关前新增的阿里云 WAF
+#   （见 src/sso.py 的说明）对写请求有突发惩罚 —— 写频突刺会把整个 IP 拖进
+#   405 硬封锁约 3 分钟。批量跑前应视当下 WAF 状态调大该值（如 15~30s）。
+REG_MIN_INTERVAL = float(os.getenv("IR_REG_MIN_INTERVAL", "1.2"))
+
 # ⚠ 但别指望它带来吞吐提升：**注册根本不是瓶颈**。
 #   workers=2 时浏览器侧的消耗速率是 2/18s ≈ 0.11 账号/秒，
 #   而 1.2s 闸门给出 0.83 账号/秒 —— 快 7 倍。
 #   收窄它的真实收益只有两点：① 首屏"账号就绪"更快，减少 worker 冷启动空转
 #   （workers=2/4 账号时约省 1.5s）；② 队列不会堆深，便于把 workers 调大。
-REG_MIN_INTERVAL = 1.2
 
 # 注册接口在累计配额触顶时返回的 msgCode。
 # 🔴 别把它当成"瞬时速率"错误 —— 调 REG_MIN_INTERVAL 无效（见 src/quota.py）。
